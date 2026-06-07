@@ -19,6 +19,18 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
+// AGP 8+ requires every library module to declare a namespace.
+// Older plugins (e.g. ffmpeg_kit_flutter 4.x) omit it; patch them here.
+subprojects {
+    afterEvaluate {
+        extensions.findByType<com.android.build.gradle.LibraryExtension>()?.apply {
+            if (namespace == null) {
+                namespace = group.toString()
+            }
+        }
+    }
+}
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }

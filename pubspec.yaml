@@ -40,7 +40,7 @@ dependencies:
   path_provider: ^2.1.3
 
   # FFmpeg grid rendering
-  ffmpeg_kit_flutter: ^6.0.3
+  ffmpeg_kit_flutter: 4.5.1
 
   # Utilities
   equatable: ^2.0.5
