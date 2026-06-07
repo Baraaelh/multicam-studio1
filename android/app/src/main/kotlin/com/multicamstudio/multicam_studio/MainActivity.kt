@@ -30,6 +30,25 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(null)
                     }
+                    "renderVideos" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val inputs = call.argument<List<String>>("inputs") ?: emptyList()
+                        val outputPath = call.argument<String>("output")
+                        if (outputPath == null) {
+                            result.error("INVALID_ARGS", "Missing output path", null)
+                        } else {
+                            Thread {
+                                try {
+                                    VideoRenderService.mergeSequential(inputs, outputPath)
+                                    runOnUiThread { result.success(null) }
+                                } catch (e: Exception) {
+                                    runOnUiThread {
+                                        result.error("RENDER_FAILED", e.message, null)
+                                    }
+                                }
+                            }.start()
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

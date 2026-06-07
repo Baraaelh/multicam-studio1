@@ -33,7 +33,6 @@ class RenderPage extends GetView<RenderController> {
             padding: const EdgeInsets.all(24),
             child: Obx(() {
               final isRendering = controller.isRendering.value;
-              final progress = controller.renderProgress.value;
               final output = controller.outputPath.value;
               final error = controller.errorMessage.value;
               final srcs = controller.sources;
@@ -49,7 +48,6 @@ class RenderPage extends GetView<RenderController> {
               }
               if (isRendering) {
                 return _RenderingView(
-                  progress: progress,
                   sourceCount: srcs.length,
                   onCancel: controller.cancelRender,
                 );
@@ -153,10 +151,8 @@ class _ReadyView extends StatelessWidget {
   }
 
   String _layoutDescription(int n) => switch (n) {
-        1 => 'Single camera — passthrough copy, no re-encode.',
-        2 => 'Side by side — 1920×540 output.',
-        3 => '2×2 grid — 1920×1080 output (one empty slot).',
-        _ => '2×2 grid — 1920×1080 output.',
+        1 => 'Single camera — copy only, no re-encode.',
+        _ => '$n cameras — merged sequentially into one MP4.',
       };
 }
 
@@ -165,12 +161,10 @@ class _ReadyView extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _RenderingView extends StatelessWidget {
-  final double progress;
   final int sourceCount;
   final VoidCallback onCancel;
 
   const _RenderingView({
-    required this.progress,
     required this.sourceCount,
     required this.onCancel,
   });
@@ -188,14 +182,14 @@ class _RenderingView extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          '$sourceCount track${sourceCount == 1 ? '' : 's'} → grid composite',
+          '$sourceCount track${sourceCount == 1 ? '' : 's'} → sequential merge',
           style: const TextStyle(color: Colors.white54),
         ),
         const SizedBox(height: 32),
         ClipRRect(
           borderRadius: BorderRadius.circular(4),
           child: LinearProgressIndicator(
-            value: progress,
+            value: null,
             backgroundColor: Colors.white12,
             valueColor:
                 const AlwaysStoppedAnimation<Color>(Colors.deepPurpleAccent),
@@ -203,13 +197,9 @@ class _RenderingView extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 10),
-        Text(
-          '${(progress * 100).toStringAsFixed(0)}%',
-          style: const TextStyle(
-            color: Colors.white54,
-            fontSize: 13,
-            fontFeatures: [FontFeature.tabularFigures()],
-          ),
+        const Text(
+          'Processing…',
+          style: TextStyle(color: Colors.white54, fontSize: 13),
         ),
         const SizedBox(height: 40),
         OutlinedButton.icon(
