@@ -21,11 +21,13 @@ subprojects {
 
 // AGP 8+ requires every library module to declare a namespace.
 // Older plugins (e.g. ffmpeg_kit_flutter 4.x) omit it; patch them here.
+// Uses plugins.withId so the callback fires during configuration (not
+// afterEvaluate), avoiding "project already evaluated" errors.
 subprojects {
-    afterEvaluate {
-        extensions.findByType<com.android.build.gradle.LibraryExtension>()?.apply {
+    plugins.withId("com.android.library") {
+        extensions.configure<com.android.build.gradle.LibraryExtension> {
             if (namespace == null) {
-                namespace = group.toString()
+                namespace = project.group.toString()
             }
         }
     }
