@@ -191,22 +191,31 @@ class AdminController extends GetxController {
   Future<void> downloadRecording(RecordingInfo info) async {
     if (downloadProgress.containsKey(info.filename)) return;
     downloadProgress[info.filename] = 0.0;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
     try {
       final dir = await getApplicationDocumentsDirectory();
       final savePath = '${dir.path}/${info.filename}';
-      final client = HttpClient();
       final request = await client.getUrl(Uri.parse(info.downloadUrl));
       final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        throw HttpException(
+          'Camera returned HTTP ${response.statusCode}',
+          uri: Uri.parse(info.downloadUrl),
+        );
+      }
       final total = response.contentLength;
       var received = 0;
       final sink = File(savePath).openWrite();
-      await for (final chunk in response) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (total > 0) downloadProgress[info.filename] = received / total;
+      try {
+        await for (final chunk in response) {
+          sink.add(chunk);
+          received += chunk.length;
+          if (total > 0) downloadProgress[info.filename] = received / total;
+        }
+      } finally {
+        await sink.close();
       }
-      await sink.close();
-      client.close();
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
     } catch (e) {
@@ -216,6 +225,8 @@ class AdminController extends GetxController {
         e.toString(),
         snackPosition: SnackPosition.BOTTOM,
       );
+    } finally {
+      client.close();
     }
   }
 

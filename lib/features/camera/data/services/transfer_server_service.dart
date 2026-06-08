@@ -58,28 +58,37 @@ class TransferServer {
     _files.clear();
   }
 
-  /// Returns the first non-loopback, non-link-local IPv4 address
-  /// (preferring wlan/WiFi interfaces).
+  /// Returns the WiFi/Ethernet LAN IPv4 address of this device.
+  ///
+  /// Intentionally excludes rmnet (mobile data) — those IPs are not
+  /// reachable from other devices on the same WiFi network.
   static Future<String?> getLanIp() async {
     try {
       final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
       );
-      // Prefer WiFi / mobile data interfaces.
+
+      bool _valid(InternetAddress a) => !a.isLoopback && !a.isLinkLocal;
+
+      // 1. WiFi (wlan0, wlan1, …)
       for (final iface in interfaces) {
-        final name = iface.name.toLowerCase();
-        if (name.startsWith('wlan') ||
-            name.startsWith('rmnet') ||
-            name.startsWith('eth')) {
-          for (final addr in iface.addresses) {
-            if (!addr.isLoopback && !addr.isLinkLocal) return addr.address;
-          }
+        if (!iface.name.toLowerCase().startsWith('wlan')) continue;
+        for (final addr in iface.addresses) {
+          if (_valid(addr)) return addr.address;
         }
       }
-      // Fallback: any non-loopback address.
+      // 2. Wired Ethernet (eth0, …)
+      for (final iface in interfaces) {
+        if (!iface.name.toLowerCase().startsWith('eth')) continue;
+        for (final addr in iface.addresses) {
+          if (_valid(addr)) return addr.address;
+        }
+      }
+      // 3. Last resort: any non-loopback, non-link-local address
+      //    (excludes rmnet/mobile-data via the priority above)
       for (final iface in interfaces) {
         for (final addr in iface.addresses) {
-          if (!addr.isLoopback && !addr.isLinkLocal) return addr.address;
+          if (_valid(addr)) return addr.address;
         }
       }
     } catch (_) {}
