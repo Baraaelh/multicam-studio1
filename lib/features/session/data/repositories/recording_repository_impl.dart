@@ -32,8 +32,10 @@ class RecordingRepositoryImpl implements RecordingRepository {
                     localIp: data[FirestoreConstants.localIp] as String,
                     port: (data[FirestoreConstants.recordingPort] as num).toInt(),
                     sizeBytes: (data[FirestoreConstants.sizeBytes] as num).toInt(),
-                    recordedAt:
-                        (data[FirestoreConstants.recordedAt] as Timestamp).toDate(),
+                    recordedAt: data[FirestoreConstants.recordedAt] is Timestamp
+                        ? (data[FirestoreConstants.recordedAt] as Timestamp)
+                            .toDate()
+                        : DateTime.now(),
                   ),
                 )
                 .toList(),

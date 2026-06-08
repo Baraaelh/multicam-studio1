@@ -93,9 +93,13 @@ class ClockController extends GetxController {
     // Skip commands whose execution window has already passed (>1s late).
     if (delay.inMilliseconds < -1000) return;
 
-    final timer = Timer(
+    late final Timer timer;
+    timer = Timer(
       delay.isNegative ? Duration.zero : delay,
-      () => pendingCommand.value = cmd,
+      () {
+        pendingCommand.value = cmd;
+        _timers.remove(timer);
+      },
     );
     _timers.add(timer);
   }

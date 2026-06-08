@@ -185,7 +185,7 @@ class CameraController extends GetxController {
 
     _transferServer.register(filename, file.path);
 
-    await _publishRecordingInfo(
+    final result = await _publishRecordingInfo(
       PublishRecordingInfoParams(
         sessionId: payload.sessionId,
         info: RecordingInfo(
@@ -196,6 +196,14 @@ class CameraController extends GetxController {
           sizeBytes: sizeBytes,
           recordedAt: DateTime.now(),
         ),
+      ),
+    );
+    result.fold(
+      onSuccess: (_) {},
+      onFailure: (f) => Get.snackbar(
+        'Transfer Error',
+        'Could not publish recording info: ${f.message}',
+        snackPosition: SnackPosition.BOTTOM,
       ),
     );
   }

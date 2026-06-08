@@ -29,6 +29,7 @@ class RecordingService {
     await _recorder!.start(
       filePath,
       videoTrack: stream.getVideoTracks().firstOrNull,
+      audioTrack: stream.getAudioTracks().firstOrNull,
     );
     _currentFilePath = filePath;
     _isRecording = true;
