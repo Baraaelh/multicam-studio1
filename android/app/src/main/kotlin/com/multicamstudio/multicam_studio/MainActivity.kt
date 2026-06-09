@@ -127,6 +127,23 @@ class MainActivity : FlutterActivity() {
                             runOnUiThread { result.success(null) }
                         }
                     }
+                    "saveToPublicStorage" -> {
+                        val sourcePath = call.argument<String>("sourcePath")
+                        val filename = call.argument<String>("filename")
+                        if (sourcePath == null || filename == null) {
+                            result.error("INVALID_ARGS", "Missing sourcePath or filename", null)
+                        } else {
+                            Thread {
+                                try {
+                                    saveToPublicStorage(sourcePath, filename)
+                                    runOnUiThread { result.success(null) }
+                                } catch (e: Exception) {
+                                    Log.e(tag, "saveToPublicStorage failed: ${e.message}", e)
+                                    runOnUiThread { result.error("SAVE_FAILED", e.message, null) }
+                                }
+                            }.start()
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

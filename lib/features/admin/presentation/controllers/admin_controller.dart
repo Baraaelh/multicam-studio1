@@ -6,6 +6,7 @@ import 'dart:math';
 
 // ignore_for_file: unawaited_futures
 
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
@@ -235,6 +236,7 @@ class AdminController extends GetxController {
       );
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
+      _saveToPublicStorage(savePath, info.filename);
     } catch (e) {
       dev.log('downloadRecording: FAILED — $e', name: 'AdminController');
       downloadProgress.remove(info.filename);
@@ -290,6 +292,25 @@ class AdminController extends GetxController {
     session.value = null;
     activePeerId.value = null;
     isRecording.value = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  static const _channel = MethodChannel(
+    'com.multicamstudio.multicam_studio/camera_service',
+  );
+
+  Future<void> _saveToPublicStorage(String sourcePath, String filename) async {
+    try {
+      await _channel.invokeMethod<void>('saveToPublicStorage', {
+        'sourcePath': sourcePath,
+        'filename': filename,
+      });
+    } catch (e) {
+      dev.log('_saveToPublicStorage failed: $e', name: 'AdminController');
+    }
   }
 
   // ---------------------------------------------------------------------------

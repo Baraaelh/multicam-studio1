@@ -1,6 +1,8 @@
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 
+// ignore_for_file: unawaited_futures
+
 import '../../../../core/services/ffmpeg_service.dart';
 
 class RenderSource {
@@ -61,6 +63,7 @@ class RenderService extends GetxService {
         outputPath.value = path;
         isRendering.value = false;
         renderProgress.value = 1.0;
+        _ffmpegService.saveToPublicStorage(path, path.split('/').last);
       },
       onError: (err) {
         errorMessage.value = err;

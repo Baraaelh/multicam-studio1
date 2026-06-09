@@ -27,6 +27,17 @@ class FfmpegService {
     }
   }
 
+  Future<void> saveToPublicStorage(String sourcePath, String filename) async {
+    try {
+      await _channel.invokeMethod<void>('saveToPublicStorage', {
+        'sourcePath': sourcePath,
+        'filename': filename,
+      });
+    } catch (_) {
+      // Best-effort: internal file still works for LAN transfer even if export fails.
+    }
+  }
+
   Future<void> cancel() async {
     // Native MediaMuxer runs synchronously — cannot be cancelled mid-flight.
   }
