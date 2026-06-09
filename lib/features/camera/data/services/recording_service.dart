@@ -7,16 +7,12 @@ import 'package:path_provider/path_provider.dart';
 /// Records the local camera stream to an MP4 file using flutter_webrtc's
 /// MediaRecorder.
 ///
-/// Uses the [videoRenderer] (GL texture) path rather than the videoTrack
-/// (VideoSink) path. The renderer captures directly from the surface that is
-/// already rendering the preview, so frames are never dropped. The VideoSink
-/// path creates a secondary consumer that can fall behind the camera produce
-/// rate and silently drop frames, leaving a 0-byte file.
-///
-/// Audio is omitted: the WebRTC audio engine holds the microphone on Android.
-/// Passing audioChannel would require a second AudioRecord which fails
-/// silently and prevents the MediaMuxer from ever starting (it waits for both
-/// video and audio encoder format signals before calling muxer.start()).
+/// Audio is omitted: the WebRTC audio engine holds the microphone. Passing
+/// audioChannel: INPUT requires a second AudioRecord which fails silently and
+/// prevents the MediaMuxer from ever starting (it waits for both video and
+/// audio encoder format signals). Result: 0-byte file with no Dart error.
+/// Omitting audioChannel makes the muxer start on the video encoder signal
+/// alone.
 class RecordingService {
   static const _tag = 'RecordingService';
 
@@ -28,19 +24,22 @@ class RecordingService {
   String? get lastFilePath => _currentFilePath;
 
   Future<void> startRecording({
-    required webrtc.RTCVideoRenderer renderer,
+    required webrtc.MediaStream stream,
     required String peerId,
   }) async {
     if (_isRecording) return;
 
+    final videoTracks = stream.getVideoTracks();
+    final videoTrack = videoTracks.firstOrNull;
+
     dev.log(
-      'startRecording — textureId=${renderer.textureId}  '
-      'videoWidth=${renderer.videoWidth}  videoHeight=${renderer.videoHeight}',
+      'startRecording — videoTracks=${videoTracks.length}  '
+      'trackId=${videoTrack?.id}  enabled=${videoTrack?.enabled}',
       name: _tag,
     );
 
-    if (renderer.textureId == null || renderer.textureId == -1) {
-      dev.log('startRecording ABORTED — renderer not initialised', name: _tag);
+    if (videoTrack == null) {
+      dev.log('startRecording ABORTED — no video track in stream', name: _tag);
       return;
     }
 
@@ -53,7 +52,7 @@ class RecordingService {
     _recorder = webrtc.MediaRecorder();
     await _recorder!.start(
       filePath,
-      videoRenderer: renderer,
+      videoTrack: videoTrack,
       // audioChannel intentionally omitted — see class-level doc.
     );
 

@@ -164,10 +164,11 @@ class CameraController extends GetxController {
   }
 
   Future<void> _startRecording() async {
+    final stream = _localStream;
     final payload = _payload;
-    if (payload == null) return;
+    if (stream == null || payload == null) return;
     await _recordingService.startRecording(
-      renderer: localRenderer,
+      stream: stream,
       peerId: payload.peerId,
     );
   }
