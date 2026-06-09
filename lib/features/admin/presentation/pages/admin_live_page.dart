@@ -8,6 +8,7 @@ import '../../../../features/session/presentation/controllers/clock_controller.d
 import '../../domain/entities/camera_slot.dart';
 import '../../domain/entities/session.dart';
 import '../controllers/admin_controller.dart';
+import '../services/render_service.dart';
 import '../widgets/transfer_sheet.dart';
 
 class AdminLivePage extends GetView<AdminController> {
@@ -252,6 +253,15 @@ class _PreviewStrip extends StatelessWidget {
                     const SizedBox(width: 12),
                     GestureDetector(
                       onTap: () async {
+                        if (Get.find<RenderService>().isRendering.value) {
+                          Get.snackbar(
+                            'Render in Progress',
+                            'Wait for the render to complete before ending the session.',
+                            snackPosition: SnackPosition.BOTTOM,
+                            duration: const Duration(seconds: 3),
+                          );
+                          return;
+                        }
                         final confirmed = await _confirmEnd(context);
                         if (confirmed == true) {
                           await controller.endSession();

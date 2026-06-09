@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import 'features/admin/presentation/bindings/admin_binding.dart';
-import 'features/admin/presentation/bindings/render_binding.dart';
 import 'features/admin/presentation/pages/admin_live_page.dart';
 import 'features/admin/presentation/pages/admin_setup_page.dart';
 import 'features/admin/presentation/pages/render_page.dart';
@@ -39,7 +38,6 @@ class App extends StatelessWidget {
         GetPage(
           name: '/admin/render',
           page: () => const RenderPage(),
-          binding: RenderBinding(),
         ),
       ],
     );

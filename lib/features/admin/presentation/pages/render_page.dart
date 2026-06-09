@@ -1,18 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-import '../controllers/render_controller.dart';
+import '../services/render_service.dart';
 
-class RenderPage extends GetView<RenderController> {
+class RenderPage extends StatelessWidget {
   const RenderPage({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final service = Get.find<RenderService>();
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (!controller.isRendering.value) Get.back<void>();
+        if (!service.isRendering.value) Get.back<void>();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -20,7 +21,7 @@ class RenderPage extends GetView<RenderController> {
           backgroundColor: Colors.black,
           title: const Text('Render'),
           leading: Obx(
-            () => controller.isRendering.value
+            () => service.isRendering.value
                 ? const SizedBox.shrink()
                 : IconButton(
                     icon: const Icon(Icons.arrow_back),
@@ -32,10 +33,10 @@ class RenderPage extends GetView<RenderController> {
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Obx(() {
-              final isRendering = controller.isRendering.value;
-              final output = controller.outputPath.value;
-              final error = controller.errorMessage.value;
-              final srcs = controller.sources;
+              final isRendering = service.isRendering.value;
+              final output = service.outputPath.value;
+              final error = service.errorMessage.value;
+              final srcs = service.sources;
 
               if (output != null) {
                 return _DoneView(outputPath: output);
@@ -43,18 +44,18 @@ class RenderPage extends GetView<RenderController> {
               if (error != null) {
                 return _ErrorView(
                   error: error,
-                  onRetry: controller.startRender,
+                  onRetry: service.startRender,
                 );
               }
               if (isRendering) {
                 return _RenderingView(
                   sourceCount: srcs.length,
-                  onCancel: controller.cancelRender,
+                  onCancel: service.cancelRender,
                 );
               }
               return _ReadyView(
                 sources: srcs,
-                onRender: controller.startRender,
+                onRender: service.startRender,
               );
             }),
           ),
@@ -69,7 +70,7 @@ class RenderPage extends GetView<RenderController> {
 // ---------------------------------------------------------------------------
 
 class _ReadyView extends StatelessWidget {
-  final List<({String filename, String label, String path})> sources;
+  final List<RenderSource> sources;
   final VoidCallback onRender;
 
   const _ReadyView({required this.sources, required this.onRender});
@@ -188,11 +189,11 @@ class _RenderingView extends StatelessWidget {
         const SizedBox(height: 32),
         ClipRRect(
           borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
+          child: const LinearProgressIndicator(
             value: null,
             backgroundColor: Colors.white12,
             valueColor:
-                const AlwaysStoppedAnimation<Color>(Colors.deepPurpleAccent),
+                AlwaysStoppedAnimation<Color>(Colors.deepPurpleAccent),
             minHeight: 8,
           ),
         ),

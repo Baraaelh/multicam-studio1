@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:path_provider/path_provider.dart';
+import 'package:webrtc_interface/webrtc_interface.dart';
 
 /// Wraps flutter_webrtc's MediaRecorder to write a local camera stream
 /// to an MP4 file in the app's documents directory.
@@ -29,7 +30,7 @@ class RecordingService {
     await _recorder!.start(
       filePath,
       videoTrack: stream.getVideoTracks().firstOrNull,
-      audioTrack: stream.getAudioTracks().firstOrNull,
+      audioChannel: RecorderAudioChannel.INPUT,
     );
     _currentFilePath = filePath;
     _isRecording = true;

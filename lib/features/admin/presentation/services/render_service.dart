@@ -2,47 +2,42 @@ import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../../../core/services/ffmpeg_service.dart';
-import 'admin_controller.dart';
 
-class RenderController extends GetxController {
+class RenderSource {
+  final String filename;
+  final String label;
+  final String path;
+
+  const RenderSource({
+    required this.filename,
+    required this.label,
+    required this.path,
+  });
+}
+
+/// A GetxService — lives for the app lifetime, never disposed by route changes.
+/// This decouples the native MediaMuxer background thread from the
+/// /admin/render page lifecycle so rendering survives navigation.
+class RenderService extends GetxService {
   final FfmpegService _ffmpegService;
 
-  RenderController({required FfmpegService ffmpegService})
+  RenderService({required FfmpegService ffmpegService})
       : _ffmpegService = ffmpegService;
 
   final isRendering = false.obs;
   final renderProgress = 0.0.obs;
   final outputPath = Rx<String?>(null);
   final errorMessage = Rx<String?>(null);
+  final sources = RxList<RenderSource>();
 
-  late final AdminController _adminController;
-
-  @override
-  void onInit() {
-    super.onInit();
-    _adminController = Get.find<AdminController>();
-  }
-
-  /// `({filename, label, path})` tuples for all completed downloads.
-  List<({String filename, String label, String path})> get sources {
-    return _adminController.downloadedPaths.entries.map((entry) {
-      return (
-        filename: entry.key,
-        label: _labelFor(entry.key),
-        path: entry.value,
-      );
-    }).toList();
-  }
-
-  String _labelFor(String filename) {
-    final info = _adminController.recordings.firstWhereOrNull(
-      (r) => r.filename == filename,
-    );
-    if (info == null) return filename;
-    final slot = _adminController.slots.firstWhereOrNull(
-      (s) => s.peerId == info.peerId,
-    );
-    return slot?.deviceName ?? slot?.label ?? info.peerId.substring(0, 8);
+  /// Called by TransferSheet before navigating to the render page.
+  /// Resets prior result and loads the new source list.
+  void prepare(List<RenderSource> renderSources) {
+    if (isRendering.value) return;
+    sources.assignAll(renderSources);
+    outputPath.value = null;
+    errorMessage.value = null;
+    renderProgress.value = 0;
   }
 
   Future<void> startRender() async {
@@ -78,11 +73,5 @@ class RenderController extends GetxController {
     await _ffmpegService.cancel();
     isRendering.value = false;
     renderProgress.value = 0;
-  }
-
-  @override
-  Future<void> onClose() async {
-    if (isRendering.value) await cancelRender();
-    super.onClose();
   }
 }

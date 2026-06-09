@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import '../../../session/domain/entities/recording_info.dart';
 import '../controllers/admin_controller.dart';
+import '../services/render_service.dart';
 
 class TransferSheet extends StatelessWidget {
   const TransferSheet({super.key});
@@ -76,8 +77,7 @@ class TransferSheet extends StatelessWidget {
                       width: double.infinity,
                       child: FilledButton.icon(
                         onPressed: () {
-                          Get.back<void>();
-                          Get.toNamed<void>('/admin/render');
+                          _prepareAndNavigate(ctrl);
                         },
                         icon: const Icon(Icons.movie_edit, size: 18),
                         label: const Text('Render to Video'),
@@ -96,6 +96,26 @@ class TransferSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+void _prepareAndNavigate(AdminController ctrl) {
+  final sources = ctrl.downloadedPaths.entries.map((entry) {
+    final filename = entry.key;
+    final path = entry.value;
+    final info = ctrl.recordings.firstWhereOrNull(
+      (r) => r.filename == filename,
+    );
+    final slot = info != null
+        ? ctrl.slots.firstWhereOrNull((s) => s.peerId == info.peerId)
+        : null;
+    final label =
+        slot?.deviceName ?? slot?.label ?? info?.peerId.substring(0, 8) ?? filename;
+    return RenderSource(filename: filename, label: label, path: path);
+  }).toList();
+
+  Get.find<RenderService>().prepare(sources);
+  Get.back<void>();
+  Get.toNamed<void>('/admin/render');
 }
 
 class _RecordingTile extends StatelessWidget {
