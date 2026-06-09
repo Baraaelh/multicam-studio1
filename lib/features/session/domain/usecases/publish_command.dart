@@ -8,11 +8,15 @@ class PublishCommandParams {
   final String sessionId;
   final CommandType type;
   final int bufferMs;
+  final String? targetPeerId;
+  final Map<String, dynamic>? payload;
 
   const PublishCommandParams({
     required this.sessionId,
     required this.type,
     this.bufferMs = 3000,
+    this.targetPeerId,
+    this.payload,
   });
 }
 
@@ -27,6 +31,8 @@ class PublishCommand implements UseCase<void, PublishCommandParams> {
         params.sessionId,
         params.type,
         params.bufferMs,
+        targetPeerId: params.targetPeerId,
+        payload: params.payload,
       );
       return const Success(null);
     } catch (e) {

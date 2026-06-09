@@ -153,6 +153,8 @@ class CameraController extends GetxController {
 
   void _onCommand(SyncCommand? cmd) {
     if (cmd == null) return;
+    // Per-camera commands carry a targetPeerId — ignore if it's not us.
+    if (cmd.targetPeerId != null && cmd.targetPeerId != _payload?.peerId) return;
     switch (cmd.type) {
       case CommandType.startRecording:
         isRecording.value = true;
@@ -160,6 +162,33 @@ class CameraController extends GetxController {
       case CommandType.stopRecording:
         isRecording.value = false;
         unawaited(_stopAndPublish());
+      case CommandType.muteCamera:
+        _setAudioMuted(true);
+      case CommandType.unmuteCamera:
+        _setAudioMuted(false);
+      case CommandType.setZoom:
+        final level = (cmd.payload?['zoom'] as num?)?.toDouble() ?? 1.0;
+        unawaited(_applyZoom(level));
+    }
+  }
+
+  void _setAudioMuted(bool muted) {
+    final stream = _localStream;
+    if (stream == null) return;
+    for (final track in stream.getAudioTracks()) {
+      track.enabled = !muted;
+    }
+  }
+
+  Future<void> _applyZoom(double zoomLevel) async {
+    final stream = _localStream;
+    if (stream == null) return;
+    try {
+      for (final track in stream.getVideoTracks()) {
+        await track.applyConstraints({'zoom': zoomLevel});
+      }
+    } catch (e) {
+      dev.log('_applyZoom failed: $e', name: 'CameraController');
     }
   }
 

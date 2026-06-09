@@ -15,6 +15,7 @@ import 'package:uuid/uuid.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../../../session/domain/entities/peer_connection_state.dart';
 import '../../../session/domain/entities/recording_info.dart';
+import '../../../session/domain/entities/switch_event.dart';
 import '../../../session/domain/entities/sync_command.dart';
 import '../../../session/domain/usecases/watch_recordings.dart';
 import '../../../session/presentation/controllers/clock_controller.dart';
@@ -61,10 +62,19 @@ class AdminController extends GetxController {
   final activePeerId = Rx<String?>(null);
   final isStarting = false.obs;
   final isRecording = false.obs;
-  final qrData = <String, String>{}.obs; // peerId → JSON
+  final qrData = <String, String>{}.obs;
   final recordings = RxList<RecordingInfo>();
-  final downloadProgress = <String, double>{}.obs; // filename → 0.0..1.0
-  final downloadedPaths = <String, String>{}.obs;  // filename → local path
+  final downloadProgress = <String, double>{}.obs;
+  final downloadedPaths = <String, String>{}.obs;
+
+  // Per-camera controls (peerId → state)
+  final mutedCameras = <String, bool>{}.obs;
+  final zoomLevels = <String, double>{}.obs;
+
+  // Timeline tracking for timeline-based render
+  final switchHistory = RxList<SwitchEvent>();
+  DateTime? _recordingStartedAt;
+  DateTime? _recordingStoppedAt;
 
   // --- Internals ---
   late final String _adminId;
@@ -124,10 +134,8 @@ class AdminController extends GetxController {
     _deviceNameSubs.remove(peerId)?.cancel();
   }
 
-  /// Returns the 6-digit verification PIN for the given slot.
   String pinFor(String peerId) => _slotPins[peerId] ?? '';
 
-  /// Invalidates the current PIN and regenerates QR data with a fresh expiry.
   void refreshQrFor(String peerId) {
     _slotPins.remove(peerId);
     _refreshQrData(peerId);
@@ -156,7 +164,6 @@ class AdminController extends GetxController {
       _watchDeviceNameFor(s.sessionId, slot.peerId);
     }
 
-    // Sync admin clock after going live so sync quality is shown in UI.
     unawaited(_clockController.sync());
 
     _watchRecordingsFor(s.sessionId);
@@ -165,11 +172,25 @@ class AdminController extends GetxController {
     isStarting.value = false;
   }
 
-  /// Issues a synchronized start-recording command to all cameras.
-  /// Cameras will begin recording 3 seconds after issuedAt (server time).
   Future<void> issueStartRecording() async {
     final s = session.value;
     if (s == null) return;
+
+    // Record the moment cameras will actually start recording (command issue
+    // time + the 3-second buffer). Switch events are anchored to this origin.
+    _recordingStartedAt =
+        DateTime.now().add(const Duration(milliseconds: 3000));
+    _recordingStoppedAt = null;
+    switchHistory.clear();
+
+    // Capture the currently-active camera as the first segment.
+    final initial = activePeerId.value;
+    if (initial != null) {
+      switchHistory.add(
+        SwitchEvent(timestamp: _recordingStartedAt!, peerId: initial),
+      );
+    }
+
     await _clockController.issueCommand(
       s.sessionId,
       CommandType.startRecording,
@@ -177,10 +198,14 @@ class AdminController extends GetxController {
     isRecording.value = true;
   }
 
-  /// Issues a synchronized stop-recording command to all cameras.
   Future<void> issueStopRecording() async {
     final s = session.value;
     if (s == null) return;
+
+    // Recording stops 1 second after command issue (bufferMs = 1000).
+    _recordingStoppedAt =
+        DateTime.now().add(const Duration(milliseconds: 1000));
+
     await _clockController.issueCommand(
       s.sessionId,
       CommandType.stopRecording,
@@ -250,12 +275,112 @@ class AdminController extends GetxController {
     }
   }
 
-  /// P2P Active Stream Switching: swap which renderer is shown full-screen.
-  /// Remote receivers on all peer connections remain active — no renegotiation.
+  /// Switches the admin program view to a different camera.
+  /// Records a timeline event when recording is active so the render engine
+  /// knows the exact cut point.
   void switchActiveCamera(String peerId) {
+    if (isRecording.value && activePeerId.value != peerId) {
+      switchHistory.add(
+        SwitchEvent(timestamp: DateTime.now(), peerId: peerId),
+      );
+    }
     _signalingController.switchActiveCamera(peerId);
     activePeerId.value = peerId;
   }
+
+  // ---------------------------------------------------------------------------
+  // Per-camera controls (mute / zoom)
+  // ---------------------------------------------------------------------------
+
+  Future<void> toggleMuteCamera(String peerId) async {
+    final s = session.value;
+    if (s == null) return;
+    final nowMuted = mutedCameras[peerId] ?? false;
+    mutedCameras[peerId] = !nowMuted;
+    await _clockController.issueCommand(
+      s.sessionId,
+      nowMuted ? CommandType.unmuteCamera : CommandType.muteCamera,
+      bufferMs: 200,
+      targetPeerId: peerId,
+    );
+  }
+
+  Future<void> adjustZoom(String peerId, double delta) async {
+    final s = session.value;
+    if (s == null) return;
+    final current = zoomLevels[peerId] ?? 1.0;
+    final newLevel = (current + delta).clamp(1.0, 8.0);
+    zoomLevels[peerId] = newLevel;
+    await _clockController.issueCommand(
+      s.sessionId,
+      CommandType.setZoom,
+      bufferMs: 200,
+      targetPeerId: peerId,
+      payload: {'zoom': newLevel},
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timeline builder — called from TransferSheet before navigating to render
+  // ---------------------------------------------------------------------------
+
+  /// Converts the recorded switch history into render segments consumable by
+  /// [VideoRenderService.mergeWithTimeline]. Each segment points to a local
+  /// file path and the millisecond window to extract from it.
+  ///
+  /// Returns an empty list when no timeline data is available, which causes
+  /// the render to fall back to sequential concatenation.
+  List<Map<String, dynamic>> buildRenderSegments() {
+    final startedAt = _recordingStartedAt;
+    final stoppedAt = _recordingStoppedAt;
+    if (startedAt == null || stoppedAt == null || switchHistory.isEmpty) {
+      return [];
+    }
+
+    // Build peerId → local path map from downloaded recordings.
+    final peerToPath = <String, String>{};
+    for (final info in recordings) {
+      final path = downloadedPaths[info.filename];
+      if (path != null) peerToPath[info.peerId] = path;
+    }
+
+    final events = List<SwitchEvent>.from(switchHistory);
+    final totalMs =
+        stoppedAt.difference(startedAt).inMilliseconds.clamp(0, 999999);
+    final segments = <Map<String, dynamic>>[];
+
+    for (var i = 0; i < events.length; i++) {
+      final startMs = events[i]
+          .timestamp
+          .difference(startedAt)
+          .inMilliseconds
+          .clamp(0, totalMs);
+      final endMs = i + 1 < events.length
+          ? events[i + 1]
+              .timestamp
+              .difference(startedAt)
+              .inMilliseconds
+              .clamp(0, totalMs)
+          : totalMs;
+      final durationMs = endMs - startMs;
+      if (durationMs <= 0) continue;
+
+      final path = peerToPath[events[i].peerId];
+      if (path == null) continue; // camera not downloaded — skip this segment
+
+      segments.add({
+        'inputPath': path,
+        'startMs': startMs,
+        'durationMs': durationMs,
+      });
+    }
+
+    return segments;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session teardown
+  // ---------------------------------------------------------------------------
 
   Future<void> endSession() async {
     final s = session.value;
@@ -289,6 +414,11 @@ class AdminController extends GetxController {
     recordings.clear();
     downloadProgress.clear();
     downloadedPaths.clear();
+    mutedCameras.clear();
+    zoomLevels.clear();
+    switchHistory.clear();
+    _recordingStartedAt = null;
+    _recordingStoppedAt = null;
     session.value = null;
     activePeerId.value = null;
     isRecording.value = false;

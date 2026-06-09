@@ -32,11 +32,18 @@ class RenderService extends GetxService {
   final errorMessage = Rx<String?>(null);
   final sources = RxList<RenderSource>();
 
+  // Timeline segments produced from the admin's switch history.
+  // Non-empty → timeline render; empty → sequential concatenation fallback.
+  final segments = RxList<Map<String, dynamic>>();
+
   /// Called by TransferSheet before navigating to the render page.
-  /// Resets prior result and loads the new source list.
-  void prepare(List<RenderSource> renderSources) {
+  void prepare(
+    List<RenderSource> renderSources, {
+    List<Map<String, dynamic>>? segments,
+  }) {
     if (isRendering.value) return;
     sources.assignAll(renderSources);
+    this.segments.assignAll(segments ?? []);
     outputPath.value = null;
     errorMessage.value = null;
     renderProgress.value = 0;
@@ -58,6 +65,7 @@ class RenderService extends GetxService {
     await _ffmpegService.renderGrid(
       inputPaths: paths,
       outputPath: output,
+      segments: segments.isEmpty ? null : List<Map<String, dynamic>>.from(segments),
       onProgress: (p) => renderProgress.value = p,
       onComplete: (path) {
         outputPath.value = path;

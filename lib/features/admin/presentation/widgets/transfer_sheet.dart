@@ -113,7 +113,11 @@ void _prepareAndNavigate(AdminController ctrl) {
     return RenderSource(filename: filename, label: label, path: path);
   }).toList();
 
-  Get.find<RenderService>().prepare(sources);
+  // Build timeline segments from admin's switch history so the render engine
+  // can produce a single video following the exact switching order.
+  final segments = ctrl.buildRenderSegments();
+
+  Get.find<RenderService>().prepare(sources, segments: segments);
   Get.back<void>();
   Get.toNamed<void>('/admin/render');
 }

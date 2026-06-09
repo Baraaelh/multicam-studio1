@@ -62,12 +62,16 @@ class ClockController extends GetxController {
     String sessionId,
     CommandType type, {
     int bufferMs = 3000,
+    String? targetPeerId,
+    Map<String, dynamic>? payload,
   }) =>
       _publishCommand(
         PublishCommandParams(
           sessionId: sessionId,
           type: type,
           bufferMs: bufferMs,
+          targetPeerId: targetPeerId,
+          payload: payload,
         ),
       );
 

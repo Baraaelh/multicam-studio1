@@ -37,6 +37,17 @@ class AdminLivePage extends GetView<AdminController> {
                 child: _TopBar(status: sessionStatus),
               ),
 
+              // --- Zoom controls for the active camera ---
+              if (activeId != null)
+                Positioned(
+                  right: 12,
+                  bottom: 210,
+                  child: _ZoomControls(
+                    controller: controller,
+                    peerId: activeId,
+                  ),
+                ),
+
               // --- Preview strip + command bar (bottom) ---
               Positioned(
                 bottom: 0,
@@ -425,6 +436,7 @@ class _CameraThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ctrl = Get.find<AdminController>();
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -501,6 +513,29 @@ class _CameraThumbnail extends StatelessWidget {
                   ),
                 ),
               ),
+            // Mute toggle — top-left corner of thumbnail
+            Positioned(
+              top: 2,
+              left: 2,
+              child: Obx(() {
+                final isMuted = ctrl.mutedCameras[slot.peerId] ?? false;
+                return GestureDetector(
+                  onTap: () => ctrl.toggleMuteCamera(slot.peerId),
+                  child: Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Icon(
+                      isMuted ? Icons.mic_off : Icons.mic,
+                      color: isMuted ? Colors.redAccent : Colors.white70,
+                      size: 12,
+                    ),
+                  ),
+                );
+              }),
+            ),
           ],
         ),
       ),
@@ -513,4 +548,81 @@ class _CameraThumbnail extends StatelessWidget {
         PeerStatus.failed => Colors.red,
         _ => Colors.grey,
       };
+}
+
+// ---------------------------------------------------------------------------
+// Zoom controls — overlaid on the program view for the active camera
+// ---------------------------------------------------------------------------
+
+class _ZoomControls extends StatelessWidget {
+  final AdminController controller;
+  final String peerId;
+
+  const _ZoomControls({required this.controller, required this.peerId});
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final zoom = controller.zoomLevels[peerId] ?? 1.0;
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.black54,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ZoomButton(
+              icon: Icons.add,
+              onTap: () => controller.adjustZoom(peerId, 0.5),
+              enabled: zoom < 8.0,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                '${zoom.toStringAsFixed(1)}×',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            _ZoomButton(
+              icon: Icons.remove,
+              onTap: () => controller.adjustZoom(peerId, -0.5),
+              enabled: zoom > 1.0,
+            ),
+          ],
+        ),
+      );
+    });
+  }
+}
+
+class _ZoomButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool enabled;
+
+  const _ZoomButton({
+    required this.icon,
+    required this.onTap,
+    required this.enabled,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Icon(
+          icon,
+          color: enabled ? Colors.white : Colors.white24,
+          size: 18,
+        ),
+      ),
+    );
+  }
 }

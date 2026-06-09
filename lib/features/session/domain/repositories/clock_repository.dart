@@ -4,8 +4,10 @@ abstract interface class ClockRepository {
   Future<void> addCommand(
     String sessionId,
     CommandType type,
-    int bufferMs,
-  );
+    int bufferMs, {
+    String? targetPeerId,
+    Map<String, dynamic>? payload,
+  });
 
   Stream<SyncCommand> watchCommands(String sessionId);
 }

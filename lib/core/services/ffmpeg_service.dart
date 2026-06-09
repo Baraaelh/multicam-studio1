@@ -5,9 +5,16 @@ class FfmpegService {
     'com.multicamstudio.multicam_studio/camera_service',
   );
 
+  /// Renders [inputPaths] into a single MP4 at [outputPath].
+  ///
+  /// When [segments] is provided the render follows the admin's switching
+  /// timeline (each segment specifies which file and which time window to
+  /// extract). When [segments] is null or empty the clips are concatenated
+  /// sequentially.
   Future<void> renderGrid({
     required List<String> inputPaths,
     required String outputPath,
+    List<Map<String, dynamic>>? segments,
     void Function(double progress)? onProgress,
     void Function(String error)? onError,
     void Function(String outputPath)? onComplete,
@@ -17,6 +24,7 @@ class FfmpegService {
       await _channel.invokeMethod<void>('renderVideos', {
         'inputs': inputPaths,
         'output': outputPath,
+        if (segments != null && segments.isNotEmpty) 'segments': segments,
       });
       onProgress?.call(1.0);
       onComplete?.call(outputPath);

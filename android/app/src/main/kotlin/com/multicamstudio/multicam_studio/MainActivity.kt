@@ -49,12 +49,18 @@ class MainActivity : FlutterActivity() {
                         @Suppress("UNCHECKED_CAST")
                         val inputs = call.argument<List<String>>("inputs") ?: emptyList()
                         val outputPath = call.argument<String>("output")
+                        @Suppress("UNCHECKED_CAST")
+                        val segments = call.argument<List<Map<String, Any>>>("segments")
                         if (outputPath == null) {
                             result.error("INVALID_ARGS", "Missing output path", null)
                         } else {
                             Thread {
                                 try {
-                                    VideoRenderService.mergeSequential(inputs, outputPath)
+                                    if (!segments.isNullOrEmpty()) {
+                                        VideoRenderService.mergeWithTimeline(segments, outputPath)
+                                    } else {
+                                        VideoRenderService.mergeSequential(inputs, outputPath)
+                                    }
                                     runOnUiThread { result.success(null) }
                                 } catch (e: Exception) {
                                     runOnUiThread {

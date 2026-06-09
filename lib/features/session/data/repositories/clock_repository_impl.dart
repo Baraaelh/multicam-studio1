@@ -14,26 +14,36 @@ class ClockRepositoryImpl implements ClockRepository {
   Future<void> addCommand(
     String sessionId,
     CommandType type,
-    int bufferMs,
-  ) =>
+    int bufferMs, {
+    String? targetPeerId,
+    Map<String, dynamic>? payload,
+  }) =>
       _dataSource.addCommand(sessionId, {
         FirestoreConstants.commandType: type.name,
         FirestoreConstants.issuedAt: FieldValue.serverTimestamp(),
         FirestoreConstants.bufferMs: bufferMs,
+        if (targetPeerId != null) 'targetPeerId': targetPeerId,
+        if (payload != null) 'payload': payload,
       });
 
   @override
   Stream<SyncCommand> watchCommands(String sessionId) =>
-      _dataSource.watchCommands(sessionId).map(
-            (data) => SyncCommand(
-              id: data['id'] as String,
-              type: CommandType.fromString(
-                data[FirestoreConstants.commandType] as String,
-              ),
-              issuedAt:
-                  (data[FirestoreConstants.issuedAt] as Timestamp).toDate(),
-              bufferMs:
-                  (data[FirestoreConstants.bufferMs] as num).toInt(),
-            ),
-          );
+      _dataSource.watchCommands(sessionId).expand((data) {
+        final type = CommandType.tryFromString(
+          data[FirestoreConstants.commandType] as String? ?? '',
+        );
+        if (type == null) return <SyncCommand>[];
+        return [
+          SyncCommand(
+            id: data['id'] as String,
+            type: type,
+            issuedAt:
+                (data[FirestoreConstants.issuedAt] as Timestamp).toDate(),
+            bufferMs:
+                (data[FirestoreConstants.bufferMs] as num).toInt(),
+            targetPeerId: data['targetPeerId'] as String?,
+            payload: (data['payload'] as Map?)?.cast<String, dynamic>(),
+          ),
+        ];
+      });
 }
