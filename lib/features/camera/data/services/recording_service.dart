@@ -1,22 +1,23 @@
 import 'dart:developer' as dev;
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:path_provider/path_provider.dart';
 
-/// Records the local camera stream to an MP4 file using flutter_webrtc's
-/// MediaRecorder.
+/// Records the local camera stream to an MP4 file via a native I420VideoRecorder
+/// that bypasses EGL entirely.
 ///
-/// Audio is omitted: the WebRTC audio engine holds the microphone. Passing
-/// audioChannel: INPUT requires a second AudioRecord which fails silently and
-/// prevents the MediaMuxer from ever starting (it waits for both video and
-/// audio encoder format signals). Result: 0-byte file with no Dart error.
-/// Omitting audioChannel makes the muxer start on the video encoder signal
-/// alone.
+/// flutter_webrtc's MediaRecorder uses VideoFileRenderer which calls EGL
+/// swapBuffers internally. On MIUI/MediaTek devices this fails silently,
+/// producing a 0-byte file with no Dart-visible error. The native recorder
+/// instead attaches directly as a VideoSink on the local VideoTrack and feeds
+/// raw I420 frames to MediaCodec, which has no EGL dependency.
 class RecordingService {
   static const _tag = 'RecordingService';
+  static const _channel =
+      MethodChannel('com.multicamstudio.multicam_studio/camera_service');
 
-  webrtc.MediaRecorder? _recorder;
   String? _currentFilePath;
   bool _isRecording = false;
 
@@ -49,28 +50,33 @@ class RecordingService {
     final filename = 'rec_${shortId}_$timestamp.mp4';
     final filePath = '${dir.path}/$filename';
 
-    _recorder = webrtc.MediaRecorder();
-    await _recorder!.start(
-      filePath,
-      videoTrack: videoTrack,
-      // audioChannel intentionally omitted — see class-level doc.
-    );
-
-    _currentFilePath = filePath;
-    _isRecording = true;
-    dev.log('startRecording — started → $filePath', name: _tag);
+    try {
+      await _channel.invokeMethod<void>('startRecording', {
+        'trackId': videoTrack.id,
+        'outputPath': filePath,
+      });
+      _currentFilePath = filePath;
+      _isRecording = true;
+      dev.log('startRecording — started → $filePath', name: _tag);
+    } catch (e) {
+      dev.log('startRecording FAILED: $e', name: _tag);
+    }
   }
 
   /// Stops recording and returns the written [File], or null if nothing was recorded.
   Future<File?> stopRecording() async {
-    if (!_isRecording || _recorder == null) return null;
+    if (!_isRecording) return null;
 
-    await _recorder!.stop();
-    _recorder = null;
     _isRecording = false;
-
     final path = _currentFilePath;
     _currentFilePath = null;
+
+    try {
+      await _channel.invokeMethod<void>('stopRecording');
+    } catch (e) {
+      dev.log('stopRecording error: $e', name: _tag);
+    }
+
     if (path == null) return null;
 
     final file = File(path);

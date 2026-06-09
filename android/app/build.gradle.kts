@@ -42,3 +42,9 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Expose org.webrtc classes (VideoTrack, VideoSink, VideoFrame) to the app module.
+    // flutter_webrtc uses `implementation` scope so these don't leak transitively.
+    implementation("io.github.webrtc-sdk:android:144.7559.01")
+}
