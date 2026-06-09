@@ -38,17 +38,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
     private var firstPtsUs = Long.MIN_VALUE
     private var encoderWidth = 0
     private var encoderHeight = 0
-    private var orientationHint = 0
 
     private val encThread = HandlerThread("I420Enc").also { it.start() }
     private val encHandler = Handler(encThread.looper)
     private val bufInfo = MediaCodec.BufferInfo()
-
-    // Per-frame reusable buffers (allocated lazily at first frame).
-    private var yRow: ByteArray? = null
-    private var uvRow: ByteArray? = null
-    private var uRow: ByteArray? = null
-    private var vRow: ByteArray? = null
 
     @Throws(IOException::class)
     fun start() {
@@ -63,9 +56,8 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         encHandler.post { processFrame(frame) }
     }
 
-    private fun initEncoder(w: Int, h: Int, rotation: Int) {
-        Log.d(TAG, "initEncoder ${w}×${h} rotation=$rotation")
-        orientationHint = rotation
+    private fun initEncoder(w: Int, h: Int) {
+        Log.d(TAG, "initEncoder ${w}×${h}")
         encoderWidth = w
         encoderHeight = h
 
@@ -82,25 +74,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             enc.start()
         }
         Log.d(TAG, "encoder started (${encoder!!.name})")
-
-        // Allocate row buffers for NV12 conversion.
-        yRow  = ByteArray(w)
-        uRow  = ByteArray((w + 1) / 2)
-        vRow  = ByteArray((w + 1) / 2)
-        uvRow = ByteArray((w + 1) / 2 * 2)
     }
 
     private fun processFrame(frame: VideoFrame) {
         try {
-            if (encoder == null) {
-                // Initialise encoder on first frame using unrotated buffer dimensions.
-                val buf = frame.buffer
-                initEncoder(buf.width, buf.height, frame.rotation)
-                muxer?.setOrientationHint(frame.rotation)
-            }
-
-            val enc = encoder ?: return
-
             val i420 = frame.buffer.toI420()
             if (i420 == null) {
                 Log.w(TAG, "toI420() returned null — skipping frame")
@@ -108,6 +85,36 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             }
 
             try {
+                val frameW = i420.width
+                val frameH = i420.height
+
+                when {
+                    encoder == null -> {
+                        // First frame of this session — initialize everything.
+                        initEncoder(frameW, frameH)
+                        muxer?.setOrientationHint(frame.rotation)
+                    }
+                    frameW != encoderWidth || frameH != encoderHeight -> {
+                        if (!muxerStarted) {
+                            // Resolution changed before any output was committed — safe to reinit.
+                            Log.d(TAG, "resolution changed before muxer start " +
+                                "${encoderWidth}×${encoderHeight} → ${frameW}×${frameH}, reinit")
+                            encoder?.stop()
+                            encoder?.release()
+                            encoder = null
+                            initEncoder(frameW, frameH)
+                            muxer?.setOrientationHint(frame.rotation)
+                        } else {
+                            // Cannot change encoder dimensions after muxer has started.
+                            Log.w(TAG, "frame ${frameW}×${frameH} ≠ encoder " +
+                                "${encoderWidth}×${encoderHeight} mid-stream, skipping")
+                            return
+                        }
+                    }
+                }
+
+                val enc = encoder ?: return
+
                 val idx = enc.dequeueInputBuffer(10_000L)
                 if (idx < 0) { Log.w(TAG, "no input buffer (idx=$idx)"); return }
 
@@ -129,44 +136,50 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         }
     }
 
-    /** Converts an I420 buffer to NV12 (Y planar + UV interleaved) in [dst]. */
+    /**
+     * Converts an I420 buffer to NV12 (Y planar + UV interleaved) in [dst].
+     *
+     * Row scratch buffers are sized from the actual [i420] dimensions on every call.
+     * Using pre-allocated buffers sized at session start would crash when the camera
+     * delivers warmup frames at a different resolution than production frames.
+     */
     private fun writeNV12(i420: VideoFrame.I420Buffer, dst: ByteBuffer) {
         val w = i420.width
         val h = i420.height
         val chromaH = (h + 1) / 2
         val chromaW = (w + 1) / 2
 
+        val yRow  = ByteArray(w)
+        val uRow  = ByteArray(chromaW)
+        val vRow  = ByteArray(chromaW)
+        val uvRow = ByteArray(chromaW * 2)
+
         // Y plane — copy row-by-row to strip stride padding.
         val yBuf = i420.dataY
         val yStride = i420.strideY
-        val yRowArr = yRow!!
         for (row in 0 until h) {
             yBuf.position(row * yStride)
-            yBuf.get(yRowArr, 0, w)
-            dst.put(yRowArr, 0, w)
+            yBuf.get(yRow, 0, w)
+            dst.put(yRow, 0, w)
         }
 
-        // UV interleaved (NV12 = U then V).
+        // UV interleaved (NV12 = U then V per chroma sample).
         val uBuf = i420.dataU
         val vBuf = i420.dataV
         val uStride = i420.strideU
         val vStride = i420.strideV
-        val uRowArr = uRow!!
-        val vRowArr = vRow!!
-        val uvRowArr = uvRow!!
         val uvLen = chromaW * 2
-
         for (row in 0 until chromaH) {
             uBuf.position(row * uStride)
-            uBuf.get(uRowArr, 0, chromaW)
+            uBuf.get(uRow, 0, chromaW)
             vBuf.position(row * vStride)
-            vBuf.get(vRowArr, 0, chromaW)
+            vBuf.get(vRow, 0, chromaW)
             var uvIdx = 0
             for (col in 0 until chromaW) {
-                uvRowArr[uvIdx++] = uRowArr[col]
-                uvRowArr[uvIdx++] = vRowArr[col]
+                uvRow[uvIdx++] = uRow[col]
+                uvRow[uvIdx++] = vRow[col]
             }
-            dst.put(uvRowArr, 0, uvLen)
+            dst.put(uvRow, 0, uvLen)
         }
     }
 
@@ -218,7 +231,6 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             try {
                 val enc = encoder
                 if (enc != null) {
-                    // Signal end-of-stream via an empty input buffer.
                     val eosIdx = enc.dequeueInputBuffer(50_000L)
                     if (eosIdx >= 0) {
                         enc.queueInputBuffer(eosIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
