@@ -185,7 +185,7 @@ class CameraController extends GetxController {
     if (stream == null) return;
     try {
       for (final track in stream.getVideoTracks()) {
-        await track.applyConstraints({'zoom': zoomLevel});
+        await webrtc.Helper.setZoom(track, zoomLevel);
       }
     } catch (e) {
       dev.log('_applyZoom failed: $e', name: 'CameraController');

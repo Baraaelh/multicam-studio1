@@ -47,14 +47,17 @@ class RenderPage extends StatelessWidget {
                   onRetry: service.startRender,
                 );
               }
+              final hasTimeline = service.segments.isNotEmpty;
               if (isRendering) {
                 return _RenderingView(
                   sourceCount: srcs.length,
+                  hasTimeline: hasTimeline,
                   onCancel: service.cancelRender,
                 );
               }
               return _ReadyView(
                 sources: srcs,
+                hasTimeline: hasTimeline,
                 onRender: service.startRender,
               );
             }),
@@ -71,9 +74,14 @@ class RenderPage extends StatelessWidget {
 
 class _ReadyView extends StatelessWidget {
   final List<RenderSource> sources;
+  final bool hasTimeline;
   final VoidCallback onRender;
 
-  const _ReadyView({required this.sources, required this.onRender});
+  const _ReadyView({
+    required this.sources,
+    required this.hasTimeline,
+    required this.onRender,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -153,7 +161,9 @@ class _ReadyView extends StatelessWidget {
 
   String _layoutDescription(int n) => switch (n) {
         1 => 'Single camera — copy only, no re-encode.',
-        _ => '$n cameras — merged sequentially into one MP4.',
+        _ => hasTimeline
+            ? '$n cameras — timeline merge using switching history.'
+            : '$n cameras — merged sequentially into one MP4.',
       };
 }
 
@@ -163,10 +173,12 @@ class _ReadyView extends StatelessWidget {
 
 class _RenderingView extends StatelessWidget {
   final int sourceCount;
+  final bool hasTimeline;
   final VoidCallback onCancel;
 
   const _RenderingView({
     required this.sourceCount,
+    required this.hasTimeline,
     required this.onCancel,
   });
 
@@ -183,7 +195,7 @@ class _RenderingView extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          '$sourceCount track${sourceCount == 1 ? '' : 's'} → sequential merge',
+          '$sourceCount track${sourceCount == 1 ? '' : 's'} → ${hasTimeline ? 'timeline merge' : 'sequential merge'}',
           style: const TextStyle(color: Colors.white54),
         ),
         const SizedBox(height: 32),
