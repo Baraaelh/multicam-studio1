@@ -38,10 +38,17 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
       );
     }
 
-    // Android 13+ requires explicit notification permission for the
-    // foreground service notification.
     if (Platform.isAndroid) {
+      // Android 13+ requires explicit notification permission for the
+      // foreground service notification.
       await Permission.notification.request();
+
+      // Android ≤ 9 needs WRITE_EXTERNAL_STORAGE to copy recordings to the
+      // public Movies folder. API 29+ uses MediaStore and needs no permission.
+      // Best-effort: denial only means the file won't appear in the file
+      // manager; recording and LAN transfer still work.
+      final sdk = (await DeviceInfoPlugin().androidInfo).version.sdkInt;
+      if (sdk < 29) await Permission.storage.request();
     }
   }
 
