@@ -114,9 +114,9 @@ object VideoRenderService {
      *   durationMs – how long to extract (milliseconds)
      *
      * Cuts are snapped to the nearest preceding keyframe (H.264 I-frame
-     * interval = 1 s), so each segment may include up to one extra second of
-     * content before the intended cut point. This is the inherent accuracy
-     * limit of muxer-level editing without re-encoding.
+     * interval = 1 s), so each segment may begin up to one second before the
+     * intended cut point. This is the inherent accuracy limit of muxer-level
+     * editing without re-encoding.
      */
     fun mergeWithTimeline(segments: List<Map<String, Any>>, output: String) {
         require(segments.isNotEmpty()) { "No segments" }
@@ -150,6 +150,7 @@ object VideoRenderService {
                 val inputPath = seg["inputPath"] as String
                 val startUs = ((seg["startMs"] as Number).toLong()) * 1_000L
                 val endUs = startUs + ((seg["durationMs"] as Number).toLong()) * 1_000L
+                if (startUs >= endUs) continue // degenerate segment — skip
 
                 val ext = MediaExtractor()
                 try {
@@ -162,12 +163,16 @@ object VideoRenderService {
                     if (inAudioTrack >= 0 && muxAudioTrack >= 0) ext.selectTrack(inAudioTrack)
 
                     // Seek to the keyframe at or immediately before startUs.
-                    // The actual cut may begin up to I_FRAME_INTERVAL earlier.
                     ext.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     val actualStartUs = if (ext.sampleTime >= 0) ext.sampleTime else 0L
 
                     var maxVideoUs = actualStartUs
                     var maxAudioUs = actualStartUs
+
+                    // Track per-track exhaustion separately so we don't drop samples
+                    // from one track just because the other track reached endUs first.
+                    var videoExhausted = inVideoTrack < 0
+                    var audioExhausted = inAudioTrack < 0 || muxAudioTrack < 0
 
                     while (true) {
                         buffer.clear()
@@ -176,17 +181,26 @@ object VideoRenderService {
 
                         val trackIndex = ext.sampleTrackIndex
                         val rawTime = ext.sampleTime
-                        if (rawTime >= endUs) break // past the segment window
 
                         val muxTrack: Int
                         val adjustedTime: Long
                         when {
                             trackIndex == inVideoTrack -> {
+                                if (rawTime >= endUs) {
+                                    videoExhausted = true
+                                    ext.advance()
+                                    if (audioExhausted) break else continue
+                                }
                                 muxTrack = muxVideoTrack
                                 adjustedTime = (rawTime - actualStartUs) + videoOutputOffsetUs
                                 if (rawTime > maxVideoUs) maxVideoUs = rawTime
                             }
                             trackIndex == inAudioTrack && muxAudioTrack >= 0 -> {
+                                if (rawTime >= endUs) {
+                                    audioExhausted = true
+                                    ext.advance()
+                                    if (videoExhausted) break else continue
+                                }
                                 muxTrack = muxAudioTrack
                                 adjustedTime = (rawTime - actualStartUs) + audioOutputOffsetUs
                                 if (rawTime > maxAudioUs) maxAudioUs = rawTime
@@ -205,7 +219,7 @@ object VideoRenderService {
                         ext.advance()
                     }
 
-                    // Advance output offset by the actual extracted duration + one frame gap.
+                    // Advance output offsets by the actual extracted duration + one frame gap.
                     videoOutputOffsetUs += (maxVideoUs - actualStartUs) + 33_333L
                     audioOutputOffsetUs += (maxAudioUs - actualStartUs) + 22_676L
                 } finally {

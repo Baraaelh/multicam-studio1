@@ -448,6 +448,12 @@ class AdminController extends GetxController {
   // ---------------------------------------------------------------------------
 
   Future<void> _onRemoteStream(RemoteStreamEvent event) async {
+    // Admin device only needs video preview — disable audio tracks to prevent
+    // camera audio from playing through device speakers (causes feedback/noise).
+    for (final track in event.stream.getAudioTracks()) {
+      track.enabled = false;
+    }
+
     if (renderers.containsKey(event.peerId)) {
       renderers[event.peerId]!.srcObject = event.stream;
       return;

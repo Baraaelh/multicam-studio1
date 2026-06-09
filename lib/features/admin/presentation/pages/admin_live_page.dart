@@ -248,6 +248,7 @@ class _PreviewStrip extends StatelessWidget {
                         height: 90,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
+                          physics: const AlwaysScrollableScrollPhysics(),
                           itemCount: slots.length,
                           separatorBuilder: (_, _) =>
                               const SizedBox(width: 8),
@@ -356,63 +357,32 @@ class _RecordingBar extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        if (!isRecording) ...[
-          FilledButton.icon(
-            onPressed: onStartRecording,
-            icon: const Icon(Icons.fiber_manual_record, size: 16),
-            label: const Text('REC', style: TextStyle(letterSpacing: 1.2)),
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red.shade700,
-              minimumSize: const Size(110, 36),
-            ),
+        FilledButton.icon(
+          onPressed: isRecording ? onStopRecording : onStartRecording,
+          icon: Icon(
+            isRecording ? Icons.stop : Icons.fiber_manual_record,
+            size: 16,
           ),
-          if (hasRecordings) ...[
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              onPressed: onTransfer,
-              icon: const Icon(Icons.download, size: 16),
-              label: const Text('Transfer'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white70,
-                side: const BorderSide(color: Colors.white24),
-                minimumSize: const Size(110, 36),
-              ),
-            ),
-          ],
-        ] else ...[
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.red.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.red.shade700),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.circle, color: Colors.red, size: 10),
-                SizedBox(width: 6),
-                Text(
-                  'RECORDING',
-                  style: TextStyle(
-                    color: Colors.red,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-              ],
-            ),
+          label: Text(
+            isRecording ? 'STOP REC' : 'START REC',
+            style: const TextStyle(letterSpacing: 1.2),
           ),
-          const SizedBox(width: 12),
+          style: FilledButton.styleFrom(
+            backgroundColor:
+                isRecording ? Colors.grey.shade800 : Colors.red.shade700,
+            minimumSize: const Size(130, 36),
+          ),
+        ),
+        if (!isRecording && hasRecordings) ...[
+          const SizedBox(width: 10),
           OutlinedButton.icon(
-            onPressed: onStopRecording,
-            icon: const Icon(Icons.stop, size: 16),
-            label: const Text('STOP'),
+            onPressed: onTransfer,
+            icon: const Icon(Icons.download, size: 16),
+            label: const Text('Transfer'),
             style: OutlinedButton.styleFrom(
               foregroundColor: Colors.white70,
               side: const BorderSide(color: Colors.white24),
-              minimumSize: const Size(90, 36),
+              minimumSize: const Size(110, 36),
             ),
           ),
         ],
