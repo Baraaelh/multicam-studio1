@@ -4,7 +4,11 @@ import '../repositories/clock_repository.dart';
 
 class WatchCommandsParams {
   final String sessionId;
-  const WatchCommandsParams({required this.sessionId});
+  /// Only return commands issued at or after this instant.
+  /// Used to prevent Firestore's initial-snapshot replay of historical commands.
+  final DateTime? issuedAfter;
+
+  const WatchCommandsParams({required this.sessionId, this.issuedAfter});
 }
 
 class WatchCommands implements StreamUseCase<SyncCommand, WatchCommandsParams> {
@@ -13,5 +17,5 @@ class WatchCommands implements StreamUseCase<SyncCommand, WatchCommandsParams> {
 
   @override
   Stream<SyncCommand> call(WatchCommandsParams params) =>
-      _repository.watchCommands(params.sessionId);
+      _repository.watchCommands(params.sessionId, issuedAfter: params.issuedAfter);
 }

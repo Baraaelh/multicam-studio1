@@ -35,6 +35,8 @@ class ClockController extends GetxController {
 
   StreamSubscription<SyncCommand>? _commandSub;
   final _timers = <Timer>[];
+  // Tracks command IDs already scheduled so Firestore replay doesn't fire them twice.
+  final _scheduledIds = <String>{};
 
   /// Measures clock offset between this device and Firebase server clock.
   Future<void> sync() async {
@@ -76,26 +78,44 @@ class ClockController extends GetxController {
       );
 
   /// Camera: subscribes to commands for this session and schedules them.
+  /// Uses the current server-equivalent time as a cutoff so historical commands
+  /// already in Firestore (from earlier recordings in the same session) are
+  /// never replayed.
   void startWatchingCommands(String sessionId) {
     _commandSub?.cancel();
-    _commandSub = _watchCommands(WatchCommandsParams(sessionId: sessionId))
-        .listen(_scheduleCommand);
+    _scheduledIds.clear();
+
+    // Allow a 10-second look-back so commands issued just before the camera
+    // connected (within the 3-second buffer window) are still received.
+    final cutoff = DateTime.now()
+        .subtract(const Duration(seconds: 10))
+        .subtract(Duration(milliseconds: _clockSyncService.offsetMs));
+
+    _commandSub = _watchCommands(
+      WatchCommandsParams(sessionId: sessionId, issuedAfter: cutoff),
+    ).listen(_scheduleCommand);
   }
 
   void stopWatchingCommands() {
     _commandSub?.cancel();
     _commandSub = null;
+    _scheduledIds.clear();
   }
 
   void _scheduleCommand(SyncCommand cmd) {
+    // Dedup: ignore commands already scheduled (Firestore can replay on reconnect).
+    if (_scheduledIds.contains(cmd.id)) return;
+    _scheduledIds.add(cmd.id);
+
     final executeAtServer = cmd.executeAtServer;
     final executeAtLocal = _clockSyncService.isSynced
         ? _clockSyncService.serverToLocal(executeAtServer)
         : executeAtServer;
     final delay = executeAtLocal.difference(DateTime.now());
 
-    // Skip commands whose execution window has already passed (>1s late).
-    if (delay.inMilliseconds < -1000) return;
+    // Skip commands whose execution window has already passed by more than 10 s.
+    // The Firestore filter handles most cases; this is a secondary safety net.
+    if (delay.inMilliseconds < -10000) return;
 
     late final Timer timer;
     timer = Timer(

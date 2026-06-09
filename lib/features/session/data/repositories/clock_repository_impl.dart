@@ -27,8 +27,8 @@ class ClockRepositoryImpl implements ClockRepository {
       });
 
   @override
-  Stream<SyncCommand> watchCommands(String sessionId) =>
-      _dataSource.watchCommands(sessionId).expand((data) {
+  Stream<SyncCommand> watchCommands(String sessionId, {DateTime? issuedAfter}) =>
+      _dataSource.watchCommands(sessionId, issuedAfter: issuedAfter).expand((data) {
         final type = CommandType.tryFromString(
           data[FirestoreConstants.commandType] as String? ?? '',
         );

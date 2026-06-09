@@ -9,5 +9,5 @@ abstract interface class ClockRepository {
     Map<String, dynamic>? payload,
   });
 
-  Stream<SyncCommand> watchCommands(String sessionId);
+  Stream<SyncCommand> watchCommands(String sessionId, {DateTime? issuedAfter});
 }
