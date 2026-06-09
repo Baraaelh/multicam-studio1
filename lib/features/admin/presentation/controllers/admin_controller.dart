@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'dart:math';
 
@@ -191,6 +192,12 @@ class AdminController extends GetxController {
   Future<void> downloadRecording(RecordingInfo info) async {
     if (downloadProgress.containsKey(info.filename)) return;
     downloadProgress[info.filename] = 0.0;
+
+    dev.log(
+      'downloadRecording: GET ${info.downloadUrl}',
+      name: 'AdminController',
+    );
+
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
     try {
@@ -198,6 +205,12 @@ class AdminController extends GetxController {
       final savePath = '${dir.path}/${info.filename}';
       final request = await client.getUrl(Uri.parse(info.downloadUrl));
       final response = await request.close();
+
+      dev.log(
+        'downloadRecording: HTTP ${response.statusCode}  Content-Length=${response.contentLength}',
+        name: 'AdminController',
+      );
+
       if (response.statusCode != HttpStatus.ok) {
         throw HttpException(
           'Camera returned HTTP ${response.statusCode}',
@@ -216,9 +229,14 @@ class AdminController extends GetxController {
       } finally {
         await sink.close();
       }
+      dev.log(
+        'downloadRecording: saved $received bytes → $savePath',
+        name: 'AdminController',
+      );
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
     } catch (e) {
+      dev.log('downloadRecording: FAILED — $e', name: 'AdminController');
       downloadProgress.remove(info.filename);
       Get.snackbar(
         'Download Failed',

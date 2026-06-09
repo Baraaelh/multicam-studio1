@@ -1,4 +1,5 @@
 import 'dart:async' show unawaited;
+import 'dart:developer' as dev;
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
@@ -175,15 +176,36 @@ class CameraController extends GetxController {
   Future<void> _stopAndPublish() async {
     final file = await _recordingService.stopRecording();
     final payload = _payload;
-    if (file == null || payload == null) return;
+    if (file == null || payload == null) {
+      dev.log(
+        '_stopAndPublish: aborted — file=$file payload=$payload',
+        name: 'CameraController',
+      );
+      return;
+    }
+
+    dev.log(
+      '_stopAndPublish: file=${file.path} size=${await file.length()}',
+      name: 'CameraController',
+    );
 
     final ip = await TransferServer.getLanIp();
-    if (ip == null) return;
+    if (ip == null) {
+      dev.log('_stopAndPublish: no LAN IP — aborting publish', name: 'CameraController');
+      return;
+    }
 
     final filename = file.uri.pathSegments.last;
     final sizeBytes = await file.length();
 
+    // Register BEFORE publishing so the server is ready when admin requests.
     _transferServer.register(filename, file.path);
+
+    final downloadUrl = 'http://$ip:${TransferServer.port}/$filename';
+    dev.log(
+      '_stopAndPublish: publishing URL=$downloadUrl  size=$sizeBytes  serverRunning=${_transferServer.isRunning}',
+      name: 'CameraController',
+    );
 
     final result = await _publishRecordingInfo(
       PublishRecordingInfoParams(
@@ -199,12 +221,15 @@ class CameraController extends GetxController {
       ),
     );
     result.fold(
-      onSuccess: (_) {},
-      onFailure: (f) => Get.snackbar(
-        'Transfer Error',
-        'Could not publish recording info: ${f.message}',
-        snackPosition: SnackPosition.BOTTOM,
-      ),
+      onSuccess: (_) => dev.log('_stopAndPublish: Firestore publish OK', name: 'CameraController'),
+      onFailure: (f) {
+        dev.log('_stopAndPublish: Firestore publish FAILED — ${f.message}', name: 'CameraController');
+        Get.snackbar(
+          'Transfer Error',
+          'Could not publish recording info: ${f.message}',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      },
     );
   }
 
