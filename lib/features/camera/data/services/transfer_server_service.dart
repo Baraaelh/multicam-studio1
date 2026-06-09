@@ -61,7 +61,7 @@ class TransferServer {
       res.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
       res.headers.contentLength = length;
       res.headers.set(
-        HttpHeaders.contentDispositionHeader,
+        'content-disposition',
         'attachment; filename="$filename"',
       );
       // pipe() streams every byte from the file into the socket and closes the
