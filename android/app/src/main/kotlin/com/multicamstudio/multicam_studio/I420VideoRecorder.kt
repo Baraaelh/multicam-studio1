@@ -275,7 +275,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                     if (muxerStarted && audioBufInfo.size > 0 && !isConfig) {
                         aenc.getOutputBuffer(status)?.let { buf ->
                             buf.position(audioBufInfo.offset); buf.limit(audioBufInfo.offset + audioBufInfo.size)
-                            if (firstAudioPtsUs == Long.MIN_VALUE) firstAudioPtsUs = audioBufInfo.presentationTimeUs
+                            if (firstAudioPtsUs == Long.MIN_VALUE) {
+                                firstAudioPtsUs = audioBufInfo.presentationTimeUs
+                                Log.d(TAG, "first audio frame muxed — ptsUs=${audioBufInfo.presentationTimeUs} size=${audioBufInfo.size} track=$audioTrackIdx")
+                            }
                             audioBufInfo.presentationTimeUs -= firstAudioPtsUs
                             synchronized(muxerLock) { mux.writeSampleData(audioTrackIdx, buf, audioBufInfo) }
                         }
@@ -339,7 +342,8 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                         if (muxerStarted) mux.stop()
                         mux.release(); muxer = null; muxerStarted = false
                     }
-                    Log.d(TAG, "stop() complete — v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0}")
+                    val fileSize = java.io.File(outputPath).length()
+                    Log.d(TAG, "stop() complete — v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0} audioTrack=$audioTrackIdx sizeBytes=$fileSize path=$outputPath")
                 } catch (e: Exception) { Log.e(TAG, "muxer stop error: ${e.message}", e) }
 
                 onDone()
