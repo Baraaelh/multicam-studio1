@@ -73,20 +73,36 @@ class TransferSheet extends StatelessWidget {
                   ),
                   if (hasDownloads) ...[
                     const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: () {
-                          _prepareAndNavigate(ctrl);
-                        },
-                        icon: const Icon(Icons.movie_edit, size: 18),
-                        label: const Text('Render to Video'),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: Colors.deepPurpleAccent,
-                          minimumSize: const Size.fromHeight(48),
+                    Obx(() {
+                      final stillDownloading = ctrl.autoDownloading.value;
+                      return SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: stillDownloading
+                              ? null
+                              : () => _prepareAndNavigate(ctrl),
+                          icon: stillDownloading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white54,
+                                  ),
+                                )
+                              : const Icon(Icons.movie_edit, size: 18),
+                          label: Text(stillDownloading
+                              ? 'Waiting for downloads…'
+                              : 'Render to Video'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: stillDownloading
+                                ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
+                                : Colors.deepPurpleAccent,
+                            minimumSize: const Size.fromHeight(48),
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    }),
                   ],
                 ],
               );
@@ -140,6 +156,7 @@ class _RecordingTile extends StatelessWidget {
       final savedPath = controller.downloadedPaths[info.filename];
       final isDownloading = progress != null;
       final isDone = savedPath != null;
+      final hasFailed = controller.downloadFailed.containsKey(info.filename);
 
       return Container(
         margin: const EdgeInsets.only(bottom: 10),
@@ -180,11 +197,28 @@ class _RecordingTile extends StatelessWidget {
                       '✓ Saved',
                       style: TextStyle(color: Colors.green, fontSize: 12),
                     ),
+                  if (hasFailed)
+                    const Text(
+                      '✗ Failed',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                    ),
                 ],
               ),
             ),
             const SizedBox(width: 12),
-            if (!isDownloading && !isDone)
+            if (hasFailed)
+              FilledButton(
+                onPressed: () {
+                  controller.downloadFailed.remove(info.filename);
+                  controller.downloadRecording(info);
+                },
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.orange.shade700,
+                  minimumSize: const Size(64, 36),
+                ),
+                child: const Text('Retry'),
+              )
+            else if (!isDownloading && !isDone)
               FilledButton(
                 onPressed: () => controller.downloadRecording(info),
                 style: FilledButton.styleFrom(

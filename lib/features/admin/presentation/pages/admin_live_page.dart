@@ -245,20 +245,29 @@ class _PreviewStrip extends StatelessWidget {
                   children: [
                     Expanded(
                       child: SizedBox(
-                        height: 90,
+                        height: 110,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
                           physics: const AlwaysScrollableScrollPhysics(),
-                          itemCount: slots.length,
+                          itemCount: slots.length + (slots.length < 8 ? 1 : 0),
                           separatorBuilder: (_, _) =>
                               const SizedBox(width: 8),
-                          itemBuilder: (_, i) => _CameraThumbnail(
-                            slot: slots[i],
-                            renderer: controller.renderers[slots[i].peerId],
-                            isActive: slots[i].peerId == activeId,
-                            onTap: () =>
-                                controller.switchActiveCamera(slots[i].peerId),
-                          ),
+                          itemBuilder: (_, i) {
+                            if (i == slots.length) {
+                              return _AddCameraButton(
+                                onTap: controller.connectNewSlot,
+                              );
+                            }
+                            return _CameraThumbnail(
+                              slot: slots[i],
+                              renderer: controller.renderers[slots[i].peerId],
+                              isActive: slots[i].peerId == activeId,
+                              isCoAdmin: controller.coAdminPeerIds
+                                  .contains(slots[i].peerId),
+                              onTap: () =>
+                                  controller.switchActiveCamera(slots[i].peerId),
+                            );
+                          },
                         ),
                       ),
                     ),
@@ -369,24 +378,148 @@ class _RecordingBar extends StatelessWidget {
           ),
           style: FilledButton.styleFrom(
             backgroundColor:
-                isRecording ? Colors.grey.shade800 : Colors.red.shade700,
+                isRecording ? Colors.grey.shade800 : Colors.orange.shade800,
             minimumSize: const Size(130, 36),
           ),
         ),
+        if (isRecording) ...[
+          const SizedBox(width: 10),
+          Obx(() {
+            final secs =
+                Get.find<AdminController>().recordingSeconds.value;
+            final h = secs ~/ 3600;
+            final m = (secs % 3600) ~/ 60;
+            final s = secs % 60;
+            return Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.15),
+                border: Border.all(color: Colors.orange.shade700),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: const BoxDecoration(
+                      color: Colors.orange,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${h.toString().padLeft(2, '0')}:'
+                    '${m.toString().padLeft(2, '0')}:'
+                    '${s.toString().padLeft(2, '0')}',
+                    style: const TextStyle(
+                      color: Colors.orange,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
         if (!isRecording && hasRecordings) ...[
           const SizedBox(width: 10),
-          OutlinedButton.icon(
-            onPressed: onTransfer,
-            icon: const Icon(Icons.download, size: 16),
-            label: const Text('Transfer'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white70,
-              side: const BorderSide(color: Colors.white24),
-              minimumSize: const Size(110, 36),
-            ),
-          ),
+          Obx(() {
+            final ctrl = Get.find<AdminController>();
+            if (ctrl.autoDownloading.value) {
+              final done = ctrl.downloadedPaths.length;
+              final total = ctrl.recordings.length;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.blueAccent.withValues(alpha: 0.15),
+                  border: Border.all(color: Colors.blueAccent.shade400),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: Colors.blueAccent,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      total > 0
+                          ? 'Downloading $done/$total'
+                          : 'Preparing…',
+                      style: const TextStyle(
+                        color: Colors.blueAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+            final hasFailed = ctrl.downloadFailed.isNotEmpty;
+            return OutlinedButton.icon(
+              onPressed: onTransfer,
+              icon: Icon(
+                hasFailed ? Icons.warning_amber_rounded : Icons.download,
+                size: 16,
+              ),
+              label: Text(hasFailed ? 'Transfer ⚠' : 'Transfer'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor:
+                    hasFailed ? Colors.orange : Colors.white70,
+                side: BorderSide(
+                  color: hasFailed
+                      ? Colors.orange.shade700
+                      : Colors.white24,
+                ),
+                minimumSize: const Size(110, 36),
+              ),
+            );
+          }),
         ],
       ],
+    );
+  }
+}
+
+class _AddCameraButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _AddCameraButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 80,
+        height: 110,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white24),
+          color: Colors.white.withValues(alpha: 0.05),
+        ),
+        child: const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add, color: Colors.white38, size: 28),
+            SizedBox(height: 4),
+            Text(
+              'Camera',
+              style: TextStyle(color: Colors.white38, fontSize: 10),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -395,12 +528,14 @@ class _CameraThumbnail extends StatelessWidget {
   final CameraSlot slot;
   final RTCVideoRenderer? renderer;
   final bool isActive;
+  final bool isCoAdmin;
   final VoidCallback onTap;
 
   const _CameraThumbnail({
     required this.slot,
     required this.renderer,
     required this.isActive,
+    required this.isCoAdmin,
     required this.onTap,
   });
 
@@ -409,9 +544,11 @@ class _CameraThumbnail extends StatelessWidget {
     final ctrl = Get.find<AdminController>();
     return GestureDetector(
       onTap: onTap,
+      onLongPress: slot.connectionStatus == PeerStatus.connected
+          ? () => _showRoleMenu(context, ctrl)
+          : null,
       child: Container(
         width: 120,
-        height: 90,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
@@ -420,92 +557,249 @@ class _CameraThumbnail extends StatelessWidget {
           ),
         ),
         clipBehavior: Clip.antiAlias,
-        child: Stack(
+        child: Column(
+          mainAxisSize: MainAxisSize.max,
           children: [
-            if (renderer != null)
-              Positioned.fill(
-                child: RTCVideoView(
-                  renderer!,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                ),
-              )
-            else
-              Center(
-                child: Icon(
-                  slot.connectionStatus == PeerStatus.connected
-                      ? Icons.videocam_off
-                      : Icons.hourglass_empty,
-                  color: Colors.white38,
-                  size: 20,
-                ),
-              ),
-            Positioned(
-              bottom: 4,
-              left: 4,
-              right: 4,
-              child: Row(
+            // Video preview area
+            SizedBox(
+              height: 80,
+              child: Stack(
+                fit: StackFit.expand,
                 children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: _dotColor(slot.connectionStatus),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      slot.deviceName ?? slot.label,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        shadows: [Shadow(blurRadius: 4)],
+                  Obx(() {
+                    final isPaused =
+                        ctrl.pausedCameras[slot.peerId] ?? false;
+                    if (isPaused) {
+                      return Container(
+                        color: Colors.black87,
+                        child: const Center(
+                          child: Icon(
+                            Icons.pause_circle_outline,
+                            color: Colors.white38,
+                            size: 32,
+                          ),
+                        ),
+                      );
+                    }
+                    if (renderer != null) {
+                      return RTCVideoView(
+                        renderer!,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      );
+                    }
+                    return Center(
+                      child: Icon(
+                        slot.connectionStatus == PeerStatus.connected
+                            ? Icons.videocam_off
+                            : Icons.hourglass_empty,
+                        color: Colors.white38,
+                        size: 20,
                       ),
-                      overflow: TextOverflow.ellipsis,
+                    );
+                  }),
+                  Positioned(
+                    bottom: 4,
+                    left: 4,
+                    right: 4,
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: _dotColor(slot.connectionStatus),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            slot.deviceName ?? slot.label,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              shadows: [Shadow(blurRadius: 4)],
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
+                  if (isActive)
+                    const Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Text(
+                        'PGM',
+                        style: TextStyle(
+                          color: Colors.red,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                  if (isCoAdmin)
+                    Positioned(
+                      top: 4,
+                      left: 4,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade700,
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                        child: const Text(
+                          'CO-ADMIN',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 7,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
-            if (isActive)
-              const Positioned(
-                top: 4,
-                right: 4,
-                child: Text(
-                  'PGM',
-                  style: TextStyle(
-                    color: Colors.red,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                  ),
+            // Controls bar — pause + mute
+            Expanded(
+              child: Container(
+                color: const Color(0xFF1A1A1A),
+                child: Row(
+                  children: [
+                    // Pause / Resume
+                    Expanded(
+                      child: Obx(() {
+                        final isPaused =
+                            ctrl.pausedCameras[slot.peerId] ?? false;
+                        return GestureDetector(
+                          onTap: () => ctrl.togglePauseCamera(slot.peerId),
+                          child: Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isPaused
+                                      ? Icons.play_arrow
+                                      : Icons.pause,
+                                  size: 13,
+                                  color: isPaused
+                                      ? Colors.orange
+                                      : Colors.white60,
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  isPaused ? 'RESUME' : 'PAUSE',
+                                  style: TextStyle(
+                                    color: isPaused
+                                        ? Colors.orange
+                                        : Colors.white60,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
+                    Container(width: 1, height: 16, color: Colors.white12),
+                    // Audio ON / OFF
+                    Expanded(
+                      child: Obx(() {
+                        final isMuted =
+                            ctrl.mutedCameras[slot.peerId] ?? false;
+                        return GestureDetector(
+                          onTap: () => ctrl.toggleMuteCamera(slot.peerId),
+                          child: Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isMuted ? Icons.mic_off : Icons.mic,
+                                  size: 13,
+                                  color: isMuted
+                                      ? Colors.redAccent
+                                      : Colors.greenAccent,
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  isMuted ? 'Audio OFF' : 'Audio ON',
+                                  style: TextStyle(
+                                    color: isMuted
+                                        ? Colors.redAccent
+                                        : Colors.greenAccent,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
+                  ],
                 ),
               ),
-            // Mute toggle — top-left corner of thumbnail
-            Positioned(
-              top: 2,
-              left: 2,
-              child: Obx(() {
-                final isMuted = ctrl.mutedCameras[slot.peerId] ?? false;
-                return GestureDetector(
-                  onTap: () => ctrl.toggleMuteCamera(slot.peerId),
-                  child: Container(
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Icon(
-                      isMuted ? Icons.mic_off : Icons.mic,
-                      color: isMuted ? Colors.redAccent : Colors.white70,
-                      size: 12,
-                    ),
-                  ),
-                );
-              }),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showRoleMenu(BuildContext context, AdminController ctrl) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                slot.deviceName ?? slot.label,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            if (!isCoAdmin)
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings,
+                    color: Colors.amber),
+                title: const Text('Promote to Co-Admin',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ctrl.promoteToCoAdmin(slot.peerId);
+                },
+              )
+            else
+              ListTile(
+                leading:
+                    const Icon(Icons.person_remove, color: Colors.redAccent),
+                title: const Text('Revoke Co-Admin',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ctrl.revokeCoAdmin(slot.peerId);
+                },
+              ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -590,7 +884,7 @@ class _ZoomButton extends StatelessWidget {
         child: Icon(
           icon,
           color: enabled ? Colors.white : Colors.white24,
-          size: 18,
+          size: 20,
         ),
       ),
     );

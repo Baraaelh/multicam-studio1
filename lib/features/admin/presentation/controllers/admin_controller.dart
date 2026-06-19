@@ -75,6 +75,8 @@ class AdminController extends GetxController {
   final recordings = RxList<RecordingInfo>();
   final downloadProgress = <String, double>{}.obs;
   final downloadedPaths = <String, String>{}.obs;
+  final downloadFailed = <String, RecordingInfo>{}.obs;
+  final autoDownloading = false.obs;
 
   // Per-camera controls (peerId → state)
   final mutedCameras = <String, bool>{}.obs;
@@ -94,6 +96,9 @@ class AdminController extends GetxController {
   DateTime? _recordingStoppedAt;
   // Per-camera actual recording start (differs for late-joining cameras)
   final _cameraRecordingStartAt = <String, DateTime>{};
+
+  // Auto-download state (set on Stop Recording, cleared when all files settle)
+  bool _autoDownloadEnabled = false;
 
   // --- Internals ---
   late final String _adminId;
@@ -257,6 +262,12 @@ class AdminController extends GetxController {
     _recordingTimer?.cancel();
     _recordingTimer = null;
     recordingSeconds.value = 0;
+
+    // Arm auto-download: files arrive asynchronously via Firestore; the
+    // recordings watcher will trigger downloads as each entry lands.
+    _autoDownloadEnabled = true;
+    autoDownloading.value = true;
+    downloadFailed.clear();
   }
 
   /// Downloads a camera recording file from the camera device over LAN HTTP.
@@ -307,9 +318,12 @@ class AdminController extends GetxController {
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
       _saveToPublicStorage(savePath, info.filename);
+      _maybeFinishAutoDownload();
     } catch (e) {
       dev.log('downloadRecording: FAILED — $e', name: 'AdminController');
       downloadProgress.remove(info.filename);
+      if (_autoDownloadEnabled) downloadFailed[info.filename] = info;
+      _maybeFinishAutoDownload();
       Get.snackbar(
         'Download Failed',
         e.toString(),
@@ -514,6 +528,9 @@ class AdminController extends GetxController {
     recordings.clear();
     downloadProgress.clear();
     downloadedPaths.clear();
+    downloadFailed.clear();
+    autoDownloading.value = false;
+    _autoDownloadEnabled = false;
     mutedCameras.clear();
     zoomLevels.clear();
     pausedCameras.clear();
@@ -629,7 +646,35 @@ class AdminController extends GetxController {
     _recordingSub?.cancel();
     _recordingSub = _watchRecordings(
       WatchRecordingsParams(sessionId: sessionId),
-    ).listen((list) => recordings.assignAll(list));
+    ).listen((list) {
+      recordings.assignAll(list);
+      if (_autoDownloadEnabled) _checkAutoDownload(list);
+    });
+  }
+
+  void _checkAutoDownload(List<RecordingInfo> list) {
+    for (final info in list) {
+      if (!downloadedPaths.containsKey(info.filename) &&
+          !downloadProgress.containsKey(info.filename) &&
+          !downloadFailed.containsKey(info.filename)) {
+        unawaited(downloadRecording(info));
+      }
+    }
+    _maybeFinishAutoDownload();
+  }
+
+  void _maybeFinishAutoDownload() {
+    if (!_autoDownloadEnabled) return;
+    if (recordings.isEmpty) return;
+    final allSettled = recordings.every(
+      (r) =>
+          downloadedPaths.containsKey(r.filename) ||
+          downloadFailed.containsKey(r.filename),
+    );
+    if (allSettled) {
+      _autoDownloadEnabled = false;
+      autoDownloading.value = false;
+    }
   }
 
   /// Watches the peer collection for cameras joining via code.
