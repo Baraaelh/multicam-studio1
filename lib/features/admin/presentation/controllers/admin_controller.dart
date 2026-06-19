@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../../core/services/webrtc_service.dart';
@@ -17,11 +18,13 @@ import '../../../session/domain/entities/peer_connection_state.dart';
 import '../../../session/domain/entities/recording_info.dart';
 import '../../../session/domain/entities/switch_event.dart';
 import '../../../session/domain/entities/sync_command.dart';
+import '../../../session/domain/usecases/watch_peers.dart';
 import '../../../session/domain/usecases/watch_recordings.dart';
 import '../../../session/presentation/controllers/clock_controller.dart';
 import '../../../session/presentation/controllers/signaling_controller.dart';
 import '../../domain/entities/camera_slot.dart';
 import '../../domain/entities/session.dart';
+import '../../domain/repositories/session_repository.dart';
 import '../../domain/usecases/create_session.dart';
 import '../../domain/usecases/end_session.dart';
 import '../../domain/usecases/watch_device_name.dart';
@@ -34,6 +37,8 @@ class AdminController extends GetxController {
   final WatchDeviceName _watchDeviceName;
   final ClockController _clockController;
   final WatchRecordings _watchRecordings;
+  final WatchPeers _watchPeers;
+  final SessionRepository _sessionRepository;
 
   AdminController({
     required CreateSession createSession,
@@ -43,26 +48,30 @@ class AdminController extends GetxController {
     required WatchDeviceName watchDeviceName,
     required ClockController clockController,
     required WatchRecordings watchRecordings,
+    required WatchPeers watchPeers,
+    required SessionRepository sessionRepository,
   })  : _createSession = createSession,
         _endSession = endSession,
         _webRtcService = webRtcService,
         _signalingController = signalingController,
         _watchDeviceName = watchDeviceName,
         _clockController = clockController,
-        _watchRecordings = watchRecordings;
+        _watchRecordings = watchRecordings,
+        _watchPeers = watchPeers,
+        _sessionRepository = sessionRepository;
 
-  static const _maxSlots = 4;
+  static const _maxSlots = 8;
   final _uuid = const Uuid();
   final _random = Random();
 
   // --- Observable state ---
   final session = Rx<Session?>(null);
+  final sessionCode = ''.obs;
   final slots = RxList<CameraSlot>();
   final renderers = <String, webrtc.RTCVideoRenderer>{}.obs;
   final activePeerId = Rx<String?>(null);
   final isStarting = false.obs;
   final isRecording = false.obs;
-  final qrData = <String, String>{}.obs;
   final recordings = RxList<RecordingInfo>();
   final downloadProgress = <String, double>{}.obs;
   final downloadedPaths = <String, String>{}.obs;
@@ -70,19 +79,30 @@ class AdminController extends GetxController {
   // Per-camera controls (peerId → state)
   final mutedCameras = <String, bool>{}.obs;
   final zoomLevels = <String, double>{}.obs;
+  final pausedCameras = <String, bool>{}.obs;
+
+  // Co-admin role tracking
+  final coAdminPeerIds = RxSet<String>();
+
+  // Recording timer
+  final recordingSeconds = 0.obs;
+  Timer? _recordingTimer;
 
   // Timeline tracking for timeline-based render
   final switchHistory = RxList<SwitchEvent>();
   DateTime? _recordingStartedAt;
   DateTime? _recordingStoppedAt;
+  // Per-camera actual recording start (differs for late-joining cameras)
+  final _cameraRecordingStartAt = <String, DateTime>{};
 
   // --- Internals ---
   late final String _adminId;
-  final _slotPins = <String, String>{};
   final _deviceNameSubs = <String, StreamSubscription<String?>>{};
   StreamSubscription<RemoteStreamEvent>? _remoteStreamSub;
   StreamSubscription<List<RecordingInfo>>? _recordingSub;
+  StreamSubscription<List<({String peerId, String? deviceName})>>? _peerListSub;
   Worker? _peerStatusWorker;
+  Worker? _switchWorker;
 
   @override
   void onInit() {
@@ -94,6 +114,10 @@ class AdminController extends GetxController {
       _signalingController.peers,
       _syncPeerStatuses,
     );
+    // Watch pendingCommand to process co-admin camera-switch requests.
+    _switchWorker = ever(_clockController.pendingCommand, _onCoAdminCommand);
+    // Attempt to restore a previous session if the app was killed mid-recording.
+    unawaited(_tryRecoverFromDisk());
   }
 
   String get adminId => _adminId;
@@ -103,14 +127,20 @@ class AdminController extends GetxController {
   // ---------------------------------------------------------------------------
 
   Future<void> createSession() async {
-    final result =
-        await _createSession(CreateSessionParams(adminId: _adminId));
+    final code = _generateSessionCode();
+    final result = await _createSession(
+      CreateSessionParams(adminId: _adminId, code: code),
+    );
     result.fold(
-      onSuccess: (id) => session.value = Session(
-        sessionId: id,
-        adminId: _adminId,
-        status: SessionStatus.waiting,
-      ),
+      onSuccess: (id) {
+        session.value = Session(
+          sessionId: id,
+          adminId: _adminId,
+          status: SessionStatus.waiting,
+        );
+        sessionCode.value = code;
+        unawaited(_saveSessionToDisk(id, _adminId));
+      },
       onFailure: (f) => Get.snackbar(
         'Error',
         f.message,
@@ -119,26 +149,22 @@ class AdminController extends GetxController {
     );
   }
 
-  void addCameraSlot() {
-    if (slots.length >= _maxSlots || session.value == null) return;
-    final n = slots.length + 1;
-    final peerId = _uuid.v4();
-    slots.add(CameraSlot(peerId: peerId, label: 'Camera $n'));
-    _refreshQrData(peerId);
+  Future<void> shareCode() async {
+    final code = sessionCode.value;
+    if (code.isEmpty) return;
+    await Share.share('Join my Multicam Studio session. Code: $code');
   }
 
-  void removeSlot(String peerId) {
-    slots.removeWhere((s) => s.peerId == peerId);
-    qrData.remove(peerId);
-    _slotPins.remove(peerId);
-    _deviceNameSubs.remove(peerId)?.cancel();
-  }
-
-  String pinFor(String peerId) => _slotPins[peerId] ?? '';
-
-  void refreshQrFor(String peerId) {
-    _slotPins.remove(peerId);
-    _refreshQrData(peerId);
+  Future<void> copyCode() async {
+    final code = sessionCode.value;
+    if (code.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    Get.snackbar(
+      'Copied!',
+      'Session code $code copied to clipboard',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -147,48 +173,60 @@ class AdminController extends GetxController {
 
   Future<void> startSession() async {
     final s = session.value;
-    if (s == null || slots.isEmpty) return;
+    if (s == null) return;
     isStarting.value = true;
 
-    await Future.wait(
-      slots.map(
-        (slot) => _signalingController.connectToCamera(
-          s.sessionId,
-          slot.peerId,
-          slot.label,
-        ),
-      ),
-    );
-
-    for (final slot in List.of(slots)) {
-      _watchDeviceNameFor(s.sessionId, slot.peerId);
-    }
-
     unawaited(_clockController.sync());
-
     _watchRecordingsFor(s.sessionId);
+    _clockController.startWatchingCommands(s.sessionId);
+    // Detect cameras joining via code (fires immediately with existing peers).
+    _watchPeerList(s.sessionId);
 
     session.value = s.copyWith(status: SessionStatus.live);
     isStarting.value = false;
+  }
+
+  /// Adds a new camera slot and immediately initiates the WebRTC connection.
+  /// Can be called while the session is already live.
+  Future<void> connectNewSlot() async {
+    final s = session.value;
+    if (s == null || slots.length >= _maxSlots) return;
+    final n = slots.length + 1;
+    final peerId = _uuid.v4();
+    final slot = CameraSlot(peerId: peerId, label: 'Camera $n');
+    slots.add(slot);
+    await _signalingController.connectToCamera(s.sessionId, peerId, slot.label);
+    _watchDeviceNameFor(s.sessionId, peerId);
   }
 
   Future<void> issueStartRecording() async {
     final s = session.value;
     if (s == null) return;
 
-    // Record the moment cameras will actually start recording (command issue
-    // time + the 3-second buffer). Switch events are anchored to this origin.
+    const bufferMs = 3000;
     _recordingStartedAt =
-        DateTime.now().add(const Duration(milliseconds: 3000));
+        DateTime.now().add(const Duration(milliseconds: bufferMs));
     _recordingStoppedAt = null;
     switchHistory.clear();
+    _cameraRecordingStartAt.clear();
 
-    // Capture the currently-active camera as the first segment.
+    // Reset persisted timeline for this new recording.
+    unawaited(_sessionRepository.initTimeline(s.sessionId).catchError(
+          (Object e) => dev.log('initTimeline failed: $e', name: 'AdminController'),
+        ));
+
+    // All currently-connected cameras start at the same global origin.
+    for (final slot in slots) {
+      _cameraRecordingStartAt[slot.peerId] = _recordingStartedAt!;
+    }
+
     final initial = activePeerId.value;
     if (initial != null) {
-      switchHistory.add(
-        SwitchEvent(timestamp: _recordingStartedAt!, peerId: initial),
-      );
+      final event = SwitchEvent(timestamp: _recordingStartedAt!, peerId: initial);
+      switchHistory.add(event);
+      unawaited(_sessionRepository.appendSwitchEvent(s.sessionId, event).catchError(
+            (Object e) => dev.log('appendSwitchEvent failed: $e', name: 'AdminController'),
+          ));
     }
 
     await _clockController.issueCommand(
@@ -196,6 +234,10 @@ class AdminController extends GetxController {
       CommandType.startRecording,
     );
     isRecording.value = true;
+    recordingSeconds.value = 0;
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      recordingSeconds.value++;
+    });
   }
 
   Future<void> issueStopRecording() async {
@@ -212,6 +254,9 @@ class AdminController extends GetxController {
       bufferMs: 1000,
     );
     isRecording.value = false;
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    recordingSeconds.value = 0;
   }
 
   /// Downloads a camera recording file from the camera device over LAN HTTP.
@@ -280,16 +325,21 @@ class AdminController extends GetxController {
   /// knows the exact cut point.
   void switchActiveCamera(String peerId) {
     if (isRecording.value && activePeerId.value != peerId) {
-      switchHistory.add(
-        SwitchEvent(timestamp: DateTime.now(), peerId: peerId),
-      );
+      final event = SwitchEvent(timestamp: DateTime.now(), peerId: peerId);
+      switchHistory.add(event);
+      final sid = session.value?.sessionId;
+      if (sid != null) {
+        unawaited(_sessionRepository.appendSwitchEvent(sid, event).catchError(
+              (Object e) => dev.log('appendSwitchEvent failed: $e', name: 'AdminController'),
+            ));
+      }
     }
     _signalingController.switchActiveCamera(peerId);
     activePeerId.value = peerId;
   }
 
   // ---------------------------------------------------------------------------
-  // Per-camera controls (mute / zoom)
+  // Per-camera controls (mute / zoom / pause)
   // ---------------------------------------------------------------------------
 
   Future<void> toggleMuteCamera(String peerId) async {
@@ -301,6 +351,50 @@ class AdminController extends GetxController {
       s.sessionId,
       nowMuted ? CommandType.unmuteCamera : CommandType.muteCamera,
       bufferMs: 200,
+      targetPeerId: peerId,
+    );
+  }
+
+  Future<void> togglePauseCamera(String peerId) async {
+    final s = session.value;
+    if (s == null) return;
+    final nowPaused = pausedCameras[peerId] ?? false;
+    pausedCameras[peerId] = !nowPaused;
+    await _clockController.issueCommand(
+      s.sessionId,
+      nowPaused ? CommandType.resumeCamera : CommandType.pauseCamera,
+      bufferMs: 200,
+      targetPeerId: peerId,
+    );
+  }
+
+  Future<void> promoteToCoAdmin(String peerId) async {
+    final s = session.value;
+    if (s == null) return;
+    coAdminPeerIds.add(peerId);
+    final slotLabels = slots
+        .map((slot) => {
+              'peerId': slot.peerId,
+              'label': slot.deviceName ?? slot.label,
+            })
+        .toList();
+    await _clockController.issueCommand(
+      s.sessionId,
+      CommandType.promoteToCoAdmin,
+      bufferMs: 0,
+      targetPeerId: peerId,
+      payload: {'slots': slotLabels},
+    );
+  }
+
+  Future<void> revokeCoAdmin(String peerId) async {
+    final s = session.value;
+    if (s == null) return;
+    coAdminPeerIds.remove(peerId);
+    await _clockController.issueCommand(
+      s.sessionId,
+      CommandType.revokeCoAdmin,
+      bufferMs: 0,
       targetPeerId: peerId,
     );
   }
@@ -324,12 +418,6 @@ class AdminController extends GetxController {
   // Timeline builder — called from TransferSheet before navigating to render
   // ---------------------------------------------------------------------------
 
-  /// Converts the recorded switch history into render segments consumable by
-  /// [VideoRenderService.mergeWithTimeline]. Each segment points to a local
-  /// file path and the millisecond window to extract from it.
-  ///
-  /// Returns an empty list when no timeline data is available, which causes
-  /// the render to fall back to sequential concatenation.
   List<Map<String, dynamic>> buildRenderSegments() {
     final startedAt = _recordingStartedAt;
     final stoppedAt = _recordingStoppedAt;
@@ -350,28 +438,40 @@ class AdminController extends GetxController {
     final segments = <Map<String, dynamic>>[];
 
     for (var i = 0; i < events.length; i++) {
-      final startMs = events[i]
+      final peerId = events[i].peerId;
+      final segStartMs = events[i]
           .timestamp
           .difference(startedAt)
           .inMilliseconds
           .clamp(0, totalMs);
-      final endMs = i + 1 < events.length
+      final segEndMs = i + 1 < events.length
           ? events[i + 1]
               .timestamp
               .difference(startedAt)
               .inMilliseconds
               .clamp(0, totalMs)
           : totalMs;
-      final durationMs = endMs - startMs;
-      if (durationMs <= 0) continue;
 
-      final path = peerToPath[events[i].peerId];
-      if (path == null) continue; // camera not downloaded — skip this segment
+      final path = peerToPath[peerId];
+      if (path == null) continue;
+
+      // Late-joining cameras start recording after the global session origin.
+      // Adjust the file seek offset and trim any portion before the camera joined.
+      final cameraStartedAt = _cameraRecordingStartAt[peerId] ?? startedAt;
+      final joinOffsetMs =
+          cameraStartedAt.difference(startedAt).inMilliseconds.clamp(0, totalMs);
+
+      final effectiveStartMs = segStartMs.clamp(joinOffsetMs, totalMs);
+      final effectiveEndMs = segEndMs.clamp(joinOffsetMs, totalMs);
+      final fileDurationMs = effectiveEndMs - effectiveStartMs;
+      if (fileDurationMs <= 0) continue;
+
+      final fileStartMs = effectiveStartMs - joinOffsetMs;
 
       segments.add({
         'inputPath': path,
-        'startMs': startMs,
-        'durationMs': durationMs,
+        'startMs': fileStartMs,
+        'durationMs': fileDurationMs,
       });
     }
 
@@ -406,22 +506,31 @@ class AdminController extends GetxController {
     _deviceNameSubs.clear();
     _recordingSub?.cancel();
     _recordingSub = null;
+    _peerListSub?.cancel();
+    _peerListSub = null;
 
     renderers.clear();
     slots.clear();
-    qrData.clear();
-    _slotPins.clear();
     recordings.clear();
     downloadProgress.clear();
     downloadedPaths.clear();
     mutedCameras.clear();
     zoomLevels.clear();
+    pausedCameras.clear();
+    coAdminPeerIds.clear();
     switchHistory.clear();
+    _cameraRecordingStartAt.clear();
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    recordingSeconds.value = 0;
     _recordingStartedAt = null;
     _recordingStoppedAt = null;
     session.value = null;
+    sessionCode.value = '';
     activePeerId.value = null;
     isRecording.value = false;
+    _clockController.stopWatchingCommands();
+    unawaited(_clearSessionFromDisk());
   }
 
   // ---------------------------------------------------------------------------
@@ -442,6 +551,9 @@ class AdminController extends GetxController {
       dev.log('_saveToPublicStorage failed: $e', name: 'AdminController');
     }
   }
+
+  String _generateSessionCode() =>
+      (100000 + _random.nextInt(900000)).toString();
 
   // ---------------------------------------------------------------------------
   // Internal handlers
@@ -466,13 +578,41 @@ class AdminController extends GetxController {
   }
 
   void _syncPeerStatuses(Map<String, PeerConnectionState> peers) {
+    final s = session.value;
     for (var i = 0; i < slots.length; i++) {
       final peerState = peers[slots[i].peerId];
-      if (peerState != null &&
-          peerState.status != slots[i].connectionStatus) {
+      if (peerState != null && peerState.status != slots[i].connectionStatus) {
+        // Camera connected mid-recording → issue targeted startRecording.
+        if (isRecording.value &&
+            peerState.status == PeerStatus.connected &&
+            slots[i].connectionStatus != PeerStatus.connected &&
+            s != null) {
+          unawaited(_autoStartRecordingForPeer(slots[i].peerId, s.sessionId));
+        }
         slots[i] = slots[i].copyWith(connectionStatus: peerState.status);
       }
     }
+  }
+
+  Future<void> _autoStartRecordingForPeer(
+    String peerId,
+    String sessionId,
+  ) async {
+    const bufferMs = 1000;
+    _cameraRecordingStartAt[peerId] =
+        DateTime.now().add(const Duration(milliseconds: bufferMs));
+    await _clockController.issueCommand(
+      sessionId,
+      CommandType.startRecording,
+      bufferMs: bufferMs,
+      targetPeerId: peerId,
+    );
+  }
+
+  void _onCoAdminCommand(SyncCommand? cmd) {
+    if (cmd == null || cmd.type != CommandType.switchActiveCamera) return;
+    final targetPeerId = cmd.payload?['peerId'] as String?;
+    if (targetPeerId != null) switchActiveCamera(targetPeerId);
   }
 
   void _watchDeviceNameFor(String sessionId, String peerId) {
@@ -492,35 +632,103 @@ class AdminController extends GetxController {
     ).listen((list) => recordings.assignAll(list));
   }
 
-  void _refreshQrData(String peerId) {
-    final s = session.value;
-    if (s == null) return;
-    final slot = slots.firstWhereOrNull((slot) => slot.peerId == peerId);
-    if (slot == null) return;
-
-    final pin = _slotPins.putIfAbsent(peerId, _generatePin);
-    final expiresAt = DateTime.now()
-        .add(const Duration(minutes: 10))
-        .millisecondsSinceEpoch;
-
-    qrData[peerId] = jsonEncode({
-      'sessionId': s.sessionId,
-      'peerId': peerId,
-      'adminId': _adminId,
-      'label': slot.label,
-      'expiresAt': expiresAt,
-      'pin': pin,
+  /// Watches the peer collection for cameras joining via code.
+  /// Fires immediately with existing peers when the subscription is created,
+  /// so cameras that joined before Go Live are connected automatically.
+  void _watchPeerList(String sessionId) {
+    _peerListSub?.cancel();
+    _peerListSub = _watchPeers(sessionId).listen((peers) {
+      final s = session.value;
+      if (s == null) return;
+      for (final peer in peers) {
+        if (!slots.any((slot) => slot.peerId == peer.peerId) &&
+            slots.length < _maxSlots) {
+          final label = peer.deviceName ?? 'Camera ${slots.length + 1}';
+          final slot = CameraSlot(peerId: peer.peerId, label: label);
+          slots.add(slot);
+          unawaited(
+            _signalingController.connectToCamera(s.sessionId, peer.peerId, label),
+          );
+          _watchDeviceNameFor(s.sessionId, peer.peerId);
+          if (isRecording.value) {
+            unawaited(_autoStartRecordingForPeer(peer.peerId, s.sessionId));
+          }
+        }
+      }
     });
   }
 
-  String _generatePin() =>
-      (100000 + _random.nextInt(900000)).toString();
+  // ---------------------------------------------------------------------------
+  // Timeline disk persistence — crash recovery helpers
+  // ---------------------------------------------------------------------------
+
+  static const _sessionFileName = '_active_session.json';
+
+  Future<File> _sessionFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$_sessionFileName');
+  }
+
+  Future<void> _saveSessionToDisk(String sessionId, String adminId) async {
+    try {
+      final file = await _sessionFile();
+      await file.writeAsString(
+        jsonEncode({'sessionId': sessionId, 'adminId': adminId}),
+      );
+    } catch (e) {
+      dev.log('_saveSessionToDisk failed: $e', name: 'AdminController');
+    }
+  }
+
+  Future<void> _clearSessionFromDisk() async {
+    try {
+      final file = await _sessionFile();
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      dev.log('_clearSessionFromDisk failed: $e', name: 'AdminController');
+    }
+  }
+
+  Future<void> _tryRecoverFromDisk() async {
+    try {
+      final file = await _sessionFile();
+      if (!await file.exists()) return;
+      final raw = await file.readAsString();
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final sessionId = map['sessionId'] as String?;
+      final adminId = map['adminId'] as String?;
+      if (sessionId == null || adminId == null) return;
+
+      final events = await _sessionRepository.fetchTimeline(sessionId);
+      if (events.isEmpty) return;
+
+      // Restore in-memory state from Firestore.
+      session.value = Session(
+        sessionId: sessionId,
+        adminId: adminId,
+        status: SessionStatus.live,
+      );
+      _adminId = adminId;
+      switchHistory.assignAll(events);
+      _recordingStartedAt = events.first.timestamp;
+
+      dev.log(
+        'Recovered session $sessionId with ${events.length} timeline events',
+        name: 'AdminController',
+      );
+    } catch (e) {
+      dev.log('_tryRecoverFromDisk failed: $e', name: 'AdminController');
+    }
+  }
 
   @override
   Future<void> onClose() async {
     _remoteStreamSub?.cancel();
     _peerStatusWorker?.dispose();
+    _switchWorker?.dispose();
     _recordingSub?.cancel();
+    _peerListSub?.cancel();
+    _recordingTimer?.cancel();
     for (final sub in _deviceNameSubs.values) {
       sub.cancel();
     }

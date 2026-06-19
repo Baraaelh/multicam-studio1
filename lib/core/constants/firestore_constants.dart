@@ -1,6 +1,7 @@
 abstract final class FirestoreConstants {
   // Collections
   static const String sessions = 'sessions';
+  static const String sessionCodes = 'session_codes';
   static const String peers = 'peers';
   static const String adminCandidates = 'admin_candidates';
   static const String cameraCandidates = 'camera_candidates';
@@ -8,6 +9,7 @@ abstract final class FirestoreConstants {
   // Session document fields
   static const String status = 'status';
   static const String adminId = 'adminId';
+  static const String code = 'code';
   static const String createdAt = 'createdAt';
 
   // Peer document fields
@@ -39,4 +41,9 @@ abstract final class FirestoreConstants {
   static const String recordingPort = 'port';
   static const String sizeBytes = 'sizeBytes';
   static const String recordedAt = 'recordedAt';
+
+  // Timeline subcollection + fields
+  static const String timeline = 'timeline';
+  static const String timelineTimestamp = 'timestamp';
+  static const String timelinePeerId = 'peerId';
 }
