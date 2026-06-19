@@ -32,7 +32,7 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         private const val VIDEO_MIME = "video/avc"
         private const val VIDEO_BIT_RATE = 2_000_000
         private const val VIDEO_FRAME_RATE = 30
-        private const val VIDEO_I_FRAME_INTERVAL = 1
+        private const val VIDEO_I_FRAME_INTERVAL = 0 // 0 = every frame is a keyframe; eliminates pre-roll on cuts
 
         // Audio
         private const val AUDIO_MIME = "audio/mp4a-latm"
@@ -60,6 +60,8 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
     private var firstVideoPtsUs = Long.MIN_VALUE
     private var encoderWidth = 0
     private var encoderHeight = 0
+    private var encoderStride = 0      // actual row stride the encoder expects (>= width)
+    private var encoderSliceHeight = 0 // actual slice height the encoder expects (>= height)
 
     private val videoThread = HandlerThread("I420Vid").also { it.start() }
     private val videoHandler = Handler(videoThread.looper)
@@ -108,6 +110,16 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         videoEncoder = MediaCodec.createEncoderByType(VIDEO_MIME).also {
             it.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             it.start()
+            // Query the actual buffer layout the encoder expects in its input buffers.
+            // Hardware encoders often pad width/height to 16- or 32-pixel boundaries;
+            // writing packed (non-padded) rows places the UV plane at the wrong offset
+            // and causes severe chroma corruption ("bad TV signal" effect).
+            val inFmt = it.inputFormat
+            val rawStride = try { inFmt.getInteger(MediaFormat.KEY_STRIDE) } catch (_: Exception) { 0 }
+            val rawSlice  = try { inFmt.getInteger(MediaFormat.KEY_SLICE_HEIGHT) } catch (_: Exception) { 0 }
+            encoderStride      = if (rawStride > w) rawStride else w
+            encoderSliceHeight = if (rawSlice  > h) rawSlice  else h
+            Log.d(TAG, "encoder input: stride=$encoderStride sliceHeight=$encoderSliceHeight (frame ${w}×${h})")
         }
         Log.d(TAG, "videoEncoder started (${videoEncoder!!.name})")
     }
@@ -138,26 +150,41 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                 val idx = enc.dequeueInputBuffer(10_000L)
                 if (idx < 0) return
                 val buf = enc.getInputBuffer(idx) ?: run { enc.queueInputBuffer(idx, 0, 0, 0, 0); return }
-                buf.clear(); writeNV12(i420, buf)
+                buf.clear(); writeNV12(i420, buf, encoderStride, encoderSliceHeight)
                 enc.queueInputBuffer(idx, 0, buf.position(), frame.timestampNs / 1_000L, 0)
             } finally { i420.release() }
             drainVideoEncoder(false)
         } finally { frame.release() }
     }
 
-    private fun writeNV12(i420: VideoFrame.I420Buffer, dst: ByteBuffer) {
+    private fun writeNV12(i420: VideoFrame.I420Buffer, dst: ByteBuffer, stride: Int, sliceHeight: Int) {
         val w = i420.width; val h = i420.height
         val cW = (w + 1) / 2; val cH = (h + 1) / 2
-        val yRow = ByteArray(w); val uRow = ByteArray(cW); val vRow = ByteArray(cW); val uvRow = ByteArray(cW * 2)
+        val pad = ByteArray(stride) // zero-filled, reused for alignment padding rows
+
+        // Y plane: stride bytes per row × sliceHeight rows.
+        // Bytes [w..stride-1] in yRow are always 0 (ByteArray init) and never overwritten.
+        val yRow = ByteArray(stride)
         val yBuf = i420.dataY
-        for (row in 0 until h) { yBuf.position(row * i420.strideY); yBuf.get(yRow, 0, w); dst.put(yRow, 0, w) }
+        for (row in 0 until h) {
+            yBuf.position(row * i420.strideY)
+            yBuf.get(yRow, 0, w)
+            dst.put(yRow, 0, stride)
+        }
+        for (row in h until sliceHeight) dst.put(pad, 0, stride)
+
+        // UV plane (NV12 — interleaved U,V): stride bytes per row × (sliceHeight/2) rows.
+        // Bytes [cW*2..stride-1] in uvRow are always 0 (ByteArray init) and never overwritten.
+        val uvRow = ByteArray(stride)
         val uBuf = i420.dataU; val vBuf = i420.dataV
         for (row in 0 until cH) {
-            uBuf.position(row * i420.strideU); uBuf.get(uRow, 0, cW)
-            vBuf.position(row * i420.strideV); vBuf.get(vRow, 0, cW)
-            var j = 0; for (col in 0 until cW) { uvRow[j++] = uRow[col]; uvRow[j++] = vRow[col] }
-            dst.put(uvRow, 0, cW * 2)
+            uBuf.position(row * i420.strideU)
+            vBuf.position(row * i420.strideV)
+            var j = 0
+            for (col in 0 until cW) { uvRow[j++] = uBuf.get(); uvRow[j++] = vBuf.get() }
+            dst.put(uvRow, 0, stride)
         }
+        for (row in cH until sliceHeight / 2) dst.put(pad, 0, stride)
     }
 
     private fun drainVideoEncoder(endOfStream: Boolean) {
