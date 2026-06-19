@@ -163,9 +163,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
     private fun drainVideoEncoder(endOfStream: Boolean) {
         val enc = videoEncoder ?: return
         val mux = muxer ?: return
+        var eosRetries = 0
         while (true) {
             when (val status = enc.dequeueOutputBuffer(videoBufInfo, if (endOfStream) 50_000L else 5_000L)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER -> break
+                MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream || ++eosRetries > 40) break
                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     synchronized(muxerLock) {
@@ -258,9 +259,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
     private fun drainAudioEncoder(endOfStream: Boolean) {
         val aenc = audioEncoder ?: return
         val mux = muxer ?: return
+        var eosRetries = 0
         while (true) {
             when (val status = aenc.dequeueOutputBuffer(audioBufInfo, if (endOfStream) 50_000L else 5_000L)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER -> break
+                MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream || ++eosRetries > 40) break
                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     synchronized(muxerLock) {
@@ -339,7 +341,11 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                 try {
                     val mux = muxer
                     if (mux != null) {
-                        if (muxerStarted) mux.stop()
+                        if (muxerStarted) {
+                            mux.stop()
+                        } else {
+                            Log.w(TAG, "stop() — muxer never started; MP4 will have no tracks")
+                        }
                         mux.release(); muxer = null; muxerStarted = false
                     }
                     val fileSize = java.io.File(outputPath).length()

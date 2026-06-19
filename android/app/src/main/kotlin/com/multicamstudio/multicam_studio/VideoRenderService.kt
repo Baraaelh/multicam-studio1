@@ -124,6 +124,28 @@ object VideoRenderService {
         require(segments.isNotEmpty()) { "No segments" }
         Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output")
 
+        // Validate every input file has a video track before touching the output muxer.
+        val badPaths = segments.mapNotNull { seg ->
+            val p = seg["inputPath"] as String
+            val ext = MediaExtractor()
+            try {
+                ext.setDataSource(p)
+                val hasVideo = (0 until ext.trackCount).any {
+                    ext.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                }
+                if (hasVideo) null else p
+            } catch (e: Exception) {
+                Log.e(TAG, "probe failed for ${p.substringAfterLast('/')}: ${e.message}")
+                p
+            } finally {
+                ext.release()
+            }
+        }
+        if (badPaths.isNotEmpty()) {
+            val names = badPaths.joinToString(", ") { it.substringAfterLast('/') }
+            throw IllegalStateException("No video track in: $names")
+        }
+
         // Probe the first segment's file to obtain track formats.
         val firstPath = segments[0]["inputPath"] as String
         val probe = MediaExtractor()
