@@ -83,6 +83,11 @@ class AdminController extends GetxController {
   final zoomLevels = <String, double>{}.obs;
   final pausedCameras = <String, bool>{}.obs;
 
+  // Admin-side live audio monitoring (local only — no commands sent to cameras).
+  // true = admin hears this camera; false = silent on admin device.
+  // First camera to join is unmuted; all others default to muted.
+  final liveAudioEnabled = <String, bool>{}.obs;
+
   // Co-admin role tracking
   final coAdminPeerIds = RxSet<String>();
 
@@ -96,6 +101,10 @@ class AdminController extends GetxController {
   DateTime? _recordingStoppedAt;
   // Per-camera actual recording start (differs for late-joining cameras)
   final _cameraRecordingStartAt = <String, DateTime>{};
+
+  // Remote streams keyed by peerId — kept so toggleLiveAudio can reach audio tracks
+  // after the initial onTrack event.
+  final _remoteStreams = <String, webrtc.MediaStream>{};
 
   // Auto-download state (set on Stop Recording, cleared when all files settle)
   bool _autoDownloadEnabled = false;
@@ -534,6 +543,8 @@ class AdminController extends GetxController {
     mutedCameras.clear();
     zoomLevels.clear();
     pausedCameras.clear();
+    liveAudioEnabled.clear();
+    _remoteStreams.clear();
     coAdminPeerIds.clear();
     switchHistory.clear();
     _cameraRecordingStartAt.clear();
@@ -577,21 +588,47 @@ class AdminController extends GetxController {
   // ---------------------------------------------------------------------------
 
   Future<void> _onRemoteStream(RemoteStreamEvent event) async {
-    // Admin device only needs video preview — disable audio tracks to prevent
-    // camera audio from playing through device speakers (causes feedback/noise).
-    for (final track in event.stream.getAudioTracks()) {
-      track.enabled = false;
+    final peerId = event.peerId;
+    final stream = event.stream;
+    final isNewPeer = !renderers.containsKey(peerId);
+
+    // Determine target audio state:
+    //  - New peer, first camera → on (admin monitors the first camera by default).
+    //  - New peer, subsequent cameras → off.
+    //  - Stream replacement for existing peer → preserve admin's current choice.
+    final shouldEnable = isNewPeer
+        ? renderers.isEmpty          // true only for the very first camera
+        : (liveAudioEnabled[peerId] ?? false);
+
+    liveAudioEnabled[peerId] = shouldEnable;
+    _remoteStreams[peerId] = stream;
+    for (final track in stream.getAudioTracks()) {
+      track.enabled = shouldEnable;
     }
 
-    if (renderers.containsKey(event.peerId)) {
-      renderers[event.peerId]!.srcObject = event.stream;
+    if (!isNewPeer) {
+      renderers[peerId]!.srcObject = stream;
       return;
     }
     final renderer = webrtc.RTCVideoRenderer();
     await renderer.initialize();
-    renderer.srcObject = event.stream;
-    renderers[event.peerId] = renderer;
-    if (activePeerId.value == null) activePeerId.value = event.peerId;
+    renderer.srcObject = stream;
+    renderers[peerId] = renderer;
+    if (activePeerId.value == null) activePeerId.value = peerId;
+  }
+
+  /// Toggles live audio monitoring for [peerId] on the Admin device only.
+  /// Flips the track.enabled flag on the incoming WebRTC audio track — no
+  /// command is sent to the camera device and recording is unaffected.
+  void toggleLiveAudio(String peerId) {
+    final nowEnabled = liveAudioEnabled[peerId] ?? false;
+    liveAudioEnabled[peerId] = !nowEnabled;
+    final stream = _remoteStreams[peerId];
+    if (stream != null) {
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = !nowEnabled;
+      }
+    }
   }
 
   void _syncPeerStatuses(Map<String, PeerConnectionState> peers) {

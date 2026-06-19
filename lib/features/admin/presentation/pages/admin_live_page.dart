@@ -713,31 +713,31 @@ class _CameraThumbnail extends StatelessWidget {
                       }),
                     ),
                     Container(width: 1, height: 16, color: Colors.white12),
-                    // Audio ON / OFF
+                    // Audio monitor — local only, no command sent to camera
                     Expanded(
                       child: Obx(() {
-                        final isMuted =
-                            ctrl.mutedCameras[slot.peerId] ?? false;
+                        final isOn =
+                            ctrl.liveAudioEnabled[slot.peerId] ?? false;
                         return GestureDetector(
-                          onTap: () => ctrl.toggleMuteCamera(slot.peerId),
+                          onTap: () => ctrl.toggleLiveAudio(slot.peerId),
                           child: Center(
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
-                                  isMuted ? Icons.mic_off : Icons.mic,
+                                  isOn ? Icons.mic : Icons.mic_off,
                                   size: 13,
-                                  color: isMuted
-                                      ? Colors.redAccent
-                                      : Colors.greenAccent,
+                                  color: isOn
+                                      ? Colors.greenAccent
+                                      : Colors.white38,
                                 ),
                                 const SizedBox(width: 2),
                                 Text(
-                                  isMuted ? 'Audio OFF' : 'Audio ON',
+                                  isOn ? 'Audio ON' : 'Audio OFF',
                                   style: TextStyle(
-                                    color: isMuted
-                                        ? Colors.redAccent
-                                        : Colors.greenAccent,
+                                    color: isOn
+                                        ? Colors.greenAccent
+                                        : Colors.white38,
                                     fontSize: 8,
                                     fontWeight: FontWeight.bold,
                                   ),
