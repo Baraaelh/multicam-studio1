@@ -4,10 +4,12 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import java.nio.ByteBuffer
 
 object VideoRenderService {
 
+    private const val TAG = "VideoRenderService"
     private const val MAX_SAMPLE_SIZE = 2 * 1024 * 1024 // 2 MB per sample
 
     /**
@@ -120,6 +122,7 @@ object VideoRenderService {
      */
     fun mergeWithTimeline(segments: List<Map<String, Any>>, output: String) {
         require(segments.isNotEmpty()) { "No segments" }
+        Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output")
 
         // Probe the first segment's file to obtain track formats.
         val firstPath = segments[0]["inputPath"] as String
@@ -146,11 +149,20 @@ object VideoRenderService {
         var audioOutputOffsetUs = 0L
 
         try {
-            for (seg in segments) {
+            for ((segIdx, seg) in segments.withIndex()) {
                 val inputPath = seg["inputPath"] as String
-                val startUs = ((seg["startMs"] as Number).toLong()) * 1_000L
-                val endUs = startUs + ((seg["durationMs"] as Number).toLong()) * 1_000L
-                if (startUs >= endUs) continue // degenerate segment — skip
+                val startMs = (seg["startMs"] as Number).toLong()
+                val durationMs = (seg["durationMs"] as Number).toLong()
+                val startUs = startMs * 1_000L
+                val endUs = startUs + durationMs * 1_000L
+
+                Log.d(TAG, "segment[$segIdx]: path=${inputPath.substringAfterLast('/')} " +
+                        "startMs=$startMs endMs=${startMs + durationMs} durationMs=$durationMs")
+
+                if (startUs >= endUs) {
+                    Log.w(TAG, "segment[$segIdx]: degenerate (startUs >= endUs) — skipped")
+                    continue
+                }
 
                 val ext = MediaExtractor()
                 try {
@@ -166,6 +178,10 @@ object VideoRenderService {
                     ext.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     val actualStartUs = if (ext.sampleTime >= 0) ext.sampleTime else 0L
 
+                    Log.d(TAG, "segment[$segIdx]: seekTo ${startUs / 1_000}ms → " +
+                            "keyframe snap to ${actualStartUs / 1_000}ms " +
+                            "(${(startUs - actualStartUs) / 1_000}ms pre-roll)")
+
                     var maxVideoUs = actualStartUs
                     var maxAudioUs = actualStartUs
 
@@ -173,6 +189,7 @@ object VideoRenderService {
                     // from one track just because the other track reached endUs first.
                     var videoExhausted = inVideoTrack < 0
                     var audioExhausted = inAudioTrack < 0 || muxAudioTrack < 0
+                    var firstSampleWritten = false
 
                     while (true) {
                         buffer.clear()
@@ -211,6 +228,13 @@ object VideoRenderService {
                             }
                         }
 
+                        if (!firstSampleWritten) {
+                            firstSampleWritten = true
+                            Log.d(TAG, "segment[$segIdx]: first sample written — " +
+                                    "track=${if (muxTrack == muxVideoTrack) "video" else "audio"} " +
+                                    "rawTimeMs=${rawTime / 1_000} adjustedTimeMs=${adjustedTime / 1_000}")
+                        }
+
                         info.offset = 0
                         info.size = sampleSize
                         info.presentationTimeUs = adjustedTime
@@ -220,8 +244,14 @@ object VideoRenderService {
                     }
 
                     // Advance output offsets by the actual extracted duration + one frame gap.
+                    val videoDurationMs = (maxVideoUs - actualStartUs) / 1_000
+                    val audioDurationMs = (maxAudioUs - actualStartUs) / 1_000
                     videoOutputOffsetUs += (maxVideoUs - actualStartUs) + 33_333L
                     audioOutputOffsetUs += (maxAudioUs - actualStartUs) + 22_676L
+                    Log.d(TAG, "segment[$segIdx]: done — " +
+                            "videoDurationMs=$videoDurationMs audioDurationMs=$audioDurationMs " +
+                            "nextVideoOffsetMs=${videoOutputOffsetUs / 1_000} " +
+                            "nextAudioOffsetMs=${audioOutputOffsetUs / 1_000}")
                 } finally {
                     ext.release()
                 }
@@ -229,6 +259,8 @@ object VideoRenderService {
         } finally {
             muxer.stop()
             muxer.release()
+            val sizeBytes = java.io.File(output).length()
+            Log.d(TAG, "mergeWithTimeline: complete — sizeBytes=$sizeBytes path=$output")
         }
     }
 
