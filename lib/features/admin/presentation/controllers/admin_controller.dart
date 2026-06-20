@@ -593,11 +593,12 @@ class AdminController extends GetxController {
     final isNewPeer = !renderers.containsKey(peerId);
 
     // Determine target audio state:
-    //  - New peer, first camera → on (admin monitors the first camera by default).
-    //  - New peer, subsequent cameras → off.
+    //  - New peer → off by default. Playing camera audio immediately through the
+    //    Admin speaker causes acoustic feedback when Admin and camera are in the
+    //    same room; require the admin to enable monitoring deliberately.
     //  - Stream replacement for existing peer → preserve admin's current choice.
     final shouldEnable = isNewPeer
-        ? renderers.isEmpty          // true only for the very first camera
+        ? false
         : (liveAudioEnabled[peerId] ?? false);
 
     liveAudioEnabled[peerId] = shouldEnable;

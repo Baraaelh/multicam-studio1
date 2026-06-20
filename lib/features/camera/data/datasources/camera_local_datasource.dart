@@ -22,7 +22,11 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
           'height': {'ideal': 1080, 'min': 720},
           'frameRate': {'ideal': 30, 'max': 30},
         },
-        'audio': true,
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
       };
 
   @override

@@ -32,7 +32,10 @@ object VideoRenderService {
             probe.release()
         }
 
+        val rotation = try { videoFormat.getInteger(MediaFormat.KEY_ROTATION) } catch (_: Exception) { 0 }
+
         val muxer = MediaMuxer(output, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        if (rotation != 0) muxer.setOrientationHint(rotation)
         val muxVideoTrack = muxer.addTrack(videoFormat)
         val muxAudioTrack = if (audioFormat != null) muxer.addTrack(audioFormat) else -1
         muxer.start()
@@ -160,7 +163,35 @@ object VideoRenderService {
             probe.release()
         }
 
+        // Validate all segments share the same resolution as the first file.
+        // Different resolutions produce incompatible H.264 SPS and silently corrupt
+        // the merged video; surface this as a clear error instead.
+        val refWidth  = try { videoFormat.getInteger(MediaFormat.KEY_WIDTH)  } catch (_: Exception) { -1 }
+        val refHeight = try { videoFormat.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
+        if (refWidth > 0 && refHeight > 0) {
+            val resMismatches = segments.drop(1).mapNotNull { seg ->
+                val p = seg["inputPath"] as String
+                val ext = MediaExtractor()
+                try {
+                    ext.setDataSource(p)
+                    val fmt = findFormat(ext, "video/") ?: return@mapNotNull null
+                    val w = try { fmt.getInteger(MediaFormat.KEY_WIDTH)  } catch (_: Exception) { -1 }
+                    val h = try { fmt.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
+                    if (w != refWidth || h != refHeight) "${p.substringAfterLast('/')} (${w}×${h})" else null
+                } finally { ext.release() }
+            }
+            if (resMismatches.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Resolution mismatch — expected ${refWidth}×${refHeight}, " +
+                    "but got different sizes in: ${resMismatches.joinToString(", ")}"
+                )
+            }
+        }
+
+        val rotation = try { videoFormat.getInteger(MediaFormat.KEY_ROTATION) } catch (_: Exception) { 0 }
+
         val muxer = MediaMuxer(output, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        if (rotation != 0) muxer.setOrientationHint(rotation)
         val muxVideoTrack = muxer.addTrack(videoFormat)
         val muxAudioTrack = if (audioFormat != null) muxer.addTrack(audioFormat) else -1
         muxer.start()

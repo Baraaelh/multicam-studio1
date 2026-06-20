@@ -106,6 +106,10 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BIT_RATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_I_FRAME_INTERVAL)
+            // Embed SPS/PPS in every sync frame so that muxer-level merges across
+            // cameras (which may have different encoder hardware and thus different
+            // SPS/PPS) remain decodeable without the container-level codec data.
+            setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
         }
         videoEncoder = MediaCodec.createEncoderByType(VIDEO_MIME).also {
             it.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
