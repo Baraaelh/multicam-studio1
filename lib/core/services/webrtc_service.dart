@@ -53,7 +53,17 @@ class WebRtcService {
 
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
-        _remoteStreamCtrl.add((peerId: peerId, stream: event.streams.first));
+        final stream = event.streams.first;
+        // Disable all incoming audio tracks immediately — before the stream is
+        // emitted to AdminController. The native WebRTC engine starts rendering
+        // audio the moment onTrack fires, so any delay (Dart event loop +
+        // MethodChannel round-trip) lets audio play through the speaker briefly,
+        // which causes acoustic feedback in the room. AdminController re-enables
+        // specific tracks explicitly via toggleLiveAudio.
+        for (final track in stream.getAudioTracks()) {
+          track.enabled = false;
+        }
+        _remoteStreamCtrl.add((peerId: peerId, stream: stream));
       }
     };
 

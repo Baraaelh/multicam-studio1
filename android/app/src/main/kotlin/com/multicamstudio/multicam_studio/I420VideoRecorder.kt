@@ -108,10 +108,12 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BIT_RATE)
             setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_I_FRAME_INTERVAL)
-            // Embed SPS/PPS in every sync frame so that muxer-level merges across
-            // cameras (which may have different encoder hardware and thus different
-            // SPS/PPS) remain decodeable without the container-level codec data.
-            setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+            // Do NOT set KEY_PREPEND_HEADER_TO_SYNC_FRAMES: inline SPS/PPS in the
+            // bitstream conflict with the container-level csd-0/csd-1 that
+            // VideoRenderService writes from the first file, causing corruption at
+            // every cut boundary when cameras have different encoder hardware.
+            // KEY_I_FRAME_INTERVAL=0 already makes every frame a keyframe, so
+            // the container codec config is sufficient for random-access decoding.
         }
         videoEncoder = MediaCodec.createEncoderByType(VIDEO_MIME).also {
             it.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -240,18 +242,29 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord init failed — recording video-only"); ar.release(); return
         }
-        audioAvailable = true
 
-        val aenc = MediaCodec.createEncoderByType(AUDIO_MIME).also { enc ->
-            val fmt = MediaFormat.createAudioFormat(AUDIO_MIME, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS).apply {
-                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, bufSize)
+        // Audio encoder init can throw on some MIUI/MediaTek devices (resource
+        // contention, codec permission issues). audioAvailable must only be set
+        // AFTER full encoder init succeeds — if it were set before and init throws,
+        // maybeStartMuxer would wait forever for audioFormatReady, muxer would
+        // never start, and the output file would be audio-only or empty.
+        val aenc = try {
+            MediaCodec.createEncoderByType(AUDIO_MIME).also { enc ->
+                val fmt = MediaFormat.createAudioFormat(AUDIO_MIME, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS).apply {
+                    setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                    setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, bufSize)
+                }
+                enc.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                enc.start()
             }
-            enc.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            enc.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio encoder init failed — recording video-only: ${e.message}")
+            ar.release()
+            return
         }
 
+        audioAvailable = true
         audioEncoder = aenc
         audioRecord = ar
         ar.startRecording()

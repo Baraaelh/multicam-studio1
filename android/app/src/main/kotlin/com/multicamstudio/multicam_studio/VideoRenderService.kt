@@ -3,6 +3,7 @@ package com.multicamstudio.multicam_studio
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.util.Log
 import java.nio.ByteBuffer
@@ -32,7 +33,10 @@ object VideoRenderService {
             probe.release()
         }
 
-        val rotation = try { videoFormat.getInteger(MediaFormat.KEY_ROTATION) } catch (_: Exception) { 0 }
+        // MediaFormat.KEY_ROTATION is not reliably populated by MediaExtractor on
+        // MIUI/MediaTek devices. Use MediaMetadataRetriever which reads the
+        // container-level rotation and is reliable on all Android versions.
+        val rotation = readRotation(inputs[0])
 
         val muxer = MediaMuxer(output, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         if (rotation != 0) muxer.setOrientationHint(rotation)
@@ -249,7 +253,7 @@ object VideoRenderService {
             }
         }
 
-        val rotation = try { videoFormat.getInteger(MediaFormat.KEY_ROTATION) } catch (_: Exception) { 0 }
+        val rotation = readRotation(firstPath)
 
         val muxer = MediaMuxer(output, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         if (rotation != 0) muxer.setOrientationHint(rotation)
@@ -432,5 +436,22 @@ object VideoRenderService {
             if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith(mimePrefix) == true) return i
         }
         return -1
+    }
+
+    // MediaFormat.KEY_ROTATION from MediaExtractor is not reliably populated on
+    // MIUI/MediaTek ROMs. MediaMetadataRetriever reads the container-level rotation
+    // from the mvhd matrix and works correctly on all Android versions.
+    private fun readRotation(path: String): Int {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull() ?: 0
+        } catch (e: Exception) {
+            Log.w(TAG, "readRotation failed for ${path.substringAfterLast('/')}: ${e.message}")
+            0
+        } finally {
+            retriever.release()
+        }
     }
 }
