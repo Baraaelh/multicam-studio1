@@ -38,4 +38,10 @@ abstract interface class SignalingRepository {
   Future<void> registerDevice(String sessionId, String peerId, String deviceName);
 
   Stream<String?> watchDeviceName(String sessionId, String peerId);
+
+  /// Returns the sessionId for a given 6-digit code, or null if not found.
+  Future<String?> lookupSessionCode(String code);
+
+  /// Emits the full peer list whenever it changes (for dynamic camera joining).
+  Stream<List<({String peerId, String? deviceName})>> watchPeers(String sessionId);
 }

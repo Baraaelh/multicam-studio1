@@ -68,6 +68,21 @@ class CameraPage extends GetView<CameraController> {
                 Get.back<void>();
               },
             ),
+
+            // Co-admin overlay — shown when this device has been promoted.
+            // Positioned is a direct Stack child so layout is correct.
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: MediaQuery.of(context).padding.bottom + 110,
+              child: Obx(() {
+                if (!controller.isCoAdmin.value) return const SizedBox.shrink();
+                return _CoAdminOverlay(
+                  slots: controller.coAdminSlots,
+                  onSwitch: controller.switchCameraForAdmin,
+                );
+              }),
+            ),
           ],
         );
       }),
@@ -336,6 +351,85 @@ class _BottomControls extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Co-Admin overlay — shown when this camera device has been promoted.
+// Lets the co-admin switch which camera is on air without access to recording
+// or session controls.
+// ---------------------------------------------------------------------------
+
+class _CoAdminOverlay extends StatelessWidget {
+  final RxList<Map<String, String>> slots;
+  final void Function(String peerId) onSwitch;
+
+  const _CoAdminOverlay({required this.slots, required this.onSwitch});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.82),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.amber.shade700, width: 1.2),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.admin_panel_settings,
+                    color: Colors.amber.shade400, size: 14),
+                const SizedBox(width: 6),
+                Text(
+                  'CO-ADMIN — Switch Camera',
+                  style: TextStyle(
+                    color: Colors.amber.shade400,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Obx(() => Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: slots.map((s) {
+                    final peerId = s['peerId'] ?? '';
+                    final label = s['label'] ?? peerId;
+                    return GestureDetector(
+                      onTap: () => onSwitch(peerId),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                )),
+          ],
+        ),
     );
   }
 }

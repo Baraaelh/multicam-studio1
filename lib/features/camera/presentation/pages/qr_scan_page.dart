@@ -1,55 +1,55 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../controllers/camera_controller.dart';
 import 'camera_page.dart';
 
-class QrScanPage extends StatefulWidget {
-  const QrScanPage({super.key});
+class CodeJoinPage extends StatefulWidget {
+  const CodeJoinPage({super.key});
 
   @override
-  State<QrScanPage> createState() => _QrScanPageState();
+  State<CodeJoinPage> createState() => _CodeJoinPageState();
 }
 
-class _QrScanPageState extends State<QrScanPage> {
-  final _scanner = MobileScannerController();
-  bool _processing = false;
+class _CodeJoinPageState extends State<CodeJoinPage> {
+  final _codeController = TextEditingController();
+  bool _loading = false;
+  String? _error;
 
   @override
   void dispose() {
-    _scanner.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_processing) return;
-    final raw = capture.barcodes.firstOrNull?.rawValue;
-    if (raw == null) return;
+  Future<void> _join() async {
+    final code = _codeController.text.trim();
+    if (code.length != 6) {
+      setState(() => _error = 'Enter a 6-digit code');
+      return;
+    }
 
-    _processing = true;
-    await _scanner.stop();
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
 
     final controller = Get.find<CameraController>();
-    final result = await controller.parseQr(raw);
+    final result = await controller.resolveSessionCode(code);
 
+    if (!mounted) return;
     result.fold(
       onSuccess: (payload) {
-        // Push CameraPage on top of QrScanPage. On disconnect, user returns here.
+        // Navigate first, then start camera (same pattern as previous QR flow).
         Get.to<void>(() => const CameraPage());
         controller.startFromQr(payload);
       },
-      onFailure: (_) {
-        _processing = false;
-        _scanner.start();
-        Get.snackbar(
-          'Invalid QR',
-          'Point at a valid Multicam Studio session code',
-          backgroundColor: Colors.red.shade900,
-          colorText: Colors.white,
-          snackPosition: SnackPosition.BOTTOM,
-          margin: const EdgeInsets.all(16),
-        );
+      onFailure: (f) {
+        setState(() {
+          _loading = false;
+          _error = f.message;
+        });
       },
     );
   }
@@ -64,27 +64,82 @@ class _QrScanPageState extends State<QrScanPage> {
         title: const Text('Join Session'),
         elevation: 0,
       ),
-      body: Stack(
-        alignment: Alignment.center,
-        children: [
-          MobileScanner(controller: _scanner, onDetect: _onDetect),
-          // Viewfinder frame
-          Container(
-            width: 260,
-            height: 260,
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.white70, width: 2),
-              borderRadius: BorderRadius.circular(16),
+      body: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.videocam, size: 64, color: Colors.white24),
+            const SizedBox(height: 24),
+            const Text(
+              'Enter the 6-digit session code\nshared by the admin.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54, fontSize: 15),
             ),
-          ),
-          Positioned(
-            bottom: 56,
-            child: const Text(
-              'Point at the session QR code',
-              style: TextStyle(color: Colors.white70, fontSize: 15),
+            const SizedBox(height: 36),
+            TextField(
+              controller: _codeController,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              textAlign: TextAlign.center,
+              autofocus: true,
+              style: const TextStyle(
+                fontSize: 36,
+                letterSpacing: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(
+                hintText: '------',
+                hintStyle: const TextStyle(
+                  color: Colors.white24,
+                  fontSize: 36,
+                  letterSpacing: 14,
+                ),
+                counterText: '',
+                errorText: _error,
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.white24),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.white70),
+                ),
+                errorBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.red.shade700),
+                ),
+                focusedErrorBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Colors.red.shade700),
+                ),
+              ),
+              onSubmitted: (_) => _join(),
             ),
-          ),
-        ],
+            const SizedBox(height: 28),
+            FilledButton(
+              onPressed: _loading ? null : _join,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+              ),
+              child: _loading
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text(
+                      'Join Session',
+                      style: TextStyle(fontSize: 16),
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }

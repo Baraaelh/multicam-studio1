@@ -3,12 +3,14 @@ import 'dart:developer' as dev;
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../../core/error/result.dart';
 import '../../../../core/platform/camera_service_platform.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../../../session/domain/entities/recording_info.dart';
 import '../../../session/domain/entities/sync_command.dart';
+import '../../../session/domain/usecases/lookup_session_code.dart';
 import '../../../session/domain/usecases/publish_recording_info.dart';
 import '../../../session/presentation/controllers/clock_controller.dart';
 import '../../../session/presentation/controllers/signaling_controller.dart';
@@ -16,7 +18,6 @@ import '../../data/services/recording_service.dart';
 import '../../data/services/transfer_server_service.dart';
 import '../../domain/entities/local_camera_state.dart';
 import '../../domain/entities/qr_payload.dart';
-import '../../domain/usecases/parse_qr_payload.dart';
 import '../../domain/usecases/register_device.dart';
 import '../../domain/usecases/start_capture.dart';
 import '../../domain/usecases/stop_capture.dart';
@@ -26,7 +27,7 @@ class CameraController extends GetxController {
   final StartCapture _startCapture;
   final StopCapture _stopCapture;
   final SwitchLens _switchLens;
-  final ParseQrPayload _parseQrPayload;
+  final LookupSessionCode _lookupSessionCode;
   final RegisterDevice _registerDevice;
   final WebRtcService _webRtcService;
   final SignalingController _signalingController;
@@ -40,7 +41,7 @@ class CameraController extends GetxController {
     required StartCapture startCapture,
     required StopCapture stopCapture,
     required SwitchLens switchLens,
-    required ParseQrPayload parseQrPayload,
+    required LookupSessionCode lookupSessionCode,
     required RegisterDevice registerDevice,
     required WebRtcService webRtcService,
     required SignalingController signalingController,
@@ -52,7 +53,7 @@ class CameraController extends GetxController {
   })  : _startCapture = startCapture,
         _stopCapture = stopCapture,
         _switchLens = switchLens,
-        _parseQrPayload = parseQrPayload,
+        _lookupSessionCode = lookupSessionCode,
         _registerDevice = registerDevice,
         _webRtcService = webRtcService,
         _signalingController = signalingController,
@@ -69,6 +70,9 @@ class CameraController extends GetxController {
   final slotLabel = ''.obs;
   final sessionPin = Rx<String?>(null);
   final isRecording = false.obs;
+  final isPaused = false.obs;
+  final isCoAdmin = false.obs;
+  final coAdminSlots = RxList<Map<String, String>>();
 
   webrtc.MediaStream? _localStream;
   QrPayload? _payload;
@@ -80,8 +84,19 @@ class CameraController extends GetxController {
     await localRenderer.initialize();
   }
 
-  Future<Result<QrPayload>> parseQr(String rawValue) =>
-      _parseQrPayload(rawValue);
+  /// Looks up [code] in Firebase and returns a [QrPayload] with an
+  /// auto-generated peerId. On success, call [startFromQr] with the payload.
+  Future<Result<QrPayload>> resolveSessionCode(String code) async {
+    final result = await _lookupSessionCode(code);
+    if (result.isFailure) return Failure(result.failureOrNull!);
+    final sessionId = result.valueOrNull!;
+    return Success(QrPayload(
+      sessionId: sessionId,
+      peerId: const Uuid().v4(),
+      adminId: '',
+      label: 'Camera',
+    ));
+  }
 
   Future<void> startFromQr(QrPayload payload) async {
     _payload = payload;
@@ -137,6 +152,7 @@ class CameraController extends GetxController {
     );
 
     // 7. Register device model with Firestore so Admin sees actual hardware name.
+    //    This write is what triggers admin's _watchPeerList to detect this camera.
     unawaited(
       _registerDevice(
         RegisterDeviceParams(
@@ -163,21 +179,75 @@ class CameraController extends GetxController {
         isRecording.value = false;
         unawaited(_stopAndPublish());
       case CommandType.muteCamera:
-        _setAudioMuted(true);
+        unawaited(_setAudioMuted(true));
       case CommandType.unmuteCamera:
-        _setAudioMuted(false);
+        unawaited(_setAudioMuted(false));
       case CommandType.setZoom:
         final level = (cmd.payload?['zoom'] as num?)?.toDouble() ?? 1.0;
         unawaited(_applyZoom(level));
+      case CommandType.pauseCamera:
+        isPaused.value = true;
+        _setVideoPaused(true);
+      case CommandType.resumeCamera:
+        isPaused.value = false;
+        _setVideoPaused(false);
+      case CommandType.promoteToCoAdmin:
+        isCoAdmin.value = true;
+        final rawSlots = cmd.payload?['slots'] as List<dynamic>? ?? [];
+        coAdminSlots.assignAll(
+          rawSlots
+              .whereType<Map<String, dynamic>>()
+              .map((s) => {
+                    'peerId': s['peerId']?.toString() ?? '',
+                    'label': s['label']?.toString() ?? '',
+                  })
+              .where((s) => s['peerId']!.isNotEmpty)
+              .toList(),
+        );
+      case CommandType.revokeCoAdmin:
+        isCoAdmin.value = false;
+        coAdminSlots.clear();
+      case CommandType.switchActiveCamera:
+        // This command is processed by the primary admin, not the camera.
+        break;
     }
   }
 
-  void _setAudioMuted(bool muted) {
+  Future<void> _setAudioMuted(bool muted) async {
+    final stream = _localStream;
+    if (stream != null) {
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = !muted;
+      }
+    }
+    // Also mute via the RTCRtpSender — reliable after lens switches because
+    // the sender retains the original track reference.
+    final peerId = _payload?.peerId;
+    if (peerId != null) {
+      await _webRtcService.setAudioSenderEnabled(peerId, !muted);
+    }
+  }
+
+  void _setVideoPaused(bool paused) {
     final stream = _localStream;
     if (stream == null) return;
-    for (final track in stream.getAudioTracks()) {
-      track.enabled = !muted;
+    // Disabling the video track makes WebRTC send black frames, pausing the
+    // live feed. Local recording continues because the native recorder reads
+    // directly from the camera hardware, not from the track's enabled state.
+    for (final track in stream.getVideoTracks()) {
+      track.enabled = !paused;
     }
+  }
+
+  Future<void> switchCameraForAdmin(String targetPeerId) async {
+    final payload = _payload;
+    if (payload == null || !isCoAdmin.value) return;
+    await _clockController.issueCommand(
+      payload.sessionId,
+      CommandType.switchActiveCamera,
+      bufferMs: 0,
+      payload: {'peerId': targetPeerId},
+    );
   }
 
   Future<void> _applyZoom(double zoomLevel) async {
@@ -313,6 +383,10 @@ class CameraController extends GetxController {
     _commandWorker?.dispose();
     _commandWorker = null;
     _clockController.stopWatchingCommands();
+
+    isPaused.value = false;
+    isCoAdmin.value = false;
+    coAdminSlots.clear();
 
     await _recordingService.dispose();
     await _signalingController.disconnect(payload.sessionId, payload.peerId);

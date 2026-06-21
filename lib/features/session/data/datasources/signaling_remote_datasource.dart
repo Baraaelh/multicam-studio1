@@ -39,6 +39,12 @@ abstract interface class SignalingRemoteDataSource {
   Future<void> registerDevice(String sessionId, String peerId, String deviceName);
 
   Stream<String?> watchDeviceName(String sessionId, String peerId);
+
+  /// Looks up a session by its 6-digit code. Returns null if not found.
+  Future<String?> lookupSessionCode(String code);
+
+  /// Emits the full peer list whenever it changes (for dynamic camera join).
+  Stream<List<({String peerId, String? deviceName})>> watchPeers(String sessionId);
 }
 
 class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
@@ -177,6 +183,36 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
       _peerDoc(sessionId, peerId)
           .snapshots()
           .map((snap) => snap.data()?['deviceName'] as String?);
+
+  @override
+  Future<String?> lookupSessionCode(String code) async {
+    try {
+      final doc = await _firestore
+          .collection(FirestoreConstants.sessionCodes)
+          .doc(code)
+          .get();
+      if (!doc.exists) return null;
+      return doc.data()?['sessionId']?.toString();
+    } on FirebaseException catch (e) {
+      throw FirestoreException(e.message ?? 'Firestore error');
+    }
+  }
+
+  @override
+  Stream<List<({String peerId, String? deviceName})>> watchPeers(
+    String sessionId,
+  ) =>
+      _firestore
+          .collection(FirestoreConstants.sessions)
+          .doc(sessionId)
+          .collection(FirestoreConstants.peers)
+          .snapshots()
+          .map((snap) => snap.docs
+              .map((doc) => (
+                    peerId: doc.id,
+                    deviceName: doc.data()['deviceName']?.toString(),
+                  ))
+              .toList());
 
   Future<void> _deleteCandidates(
     String sessionId,

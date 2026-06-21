@@ -13,7 +13,6 @@ import '../../features/admin/domain/usecases/end_session.dart';
 import '../../features/camera/data/datasources/camera_local_datasource.dart';
 import '../../features/camera/data/repositories/camera_repository_impl.dart';
 import '../../features/camera/domain/repositories/camera_repository.dart';
-import '../../features/camera/domain/usecases/parse_qr_payload.dart';
 import '../../features/camera/domain/usecases/register_device.dart';
 import '../../features/camera/domain/usecases/start_capture.dart';
 import '../../features/camera/domain/usecases/stop_capture.dart';
@@ -25,9 +24,11 @@ import '../../features/session/data/datasources/clock_remote_datasource.dart';
 import '../../features/session/data/repositories/clock_repository_impl.dart';
 import '../../features/session/domain/repositories/clock_repository.dart';
 import '../../features/session/domain/usecases/clear_signaling.dart';
+import '../../features/session/domain/usecases/lookup_session_code.dart';
 import '../../features/session/domain/usecases/publish_command.dart';
 import '../../features/session/domain/usecases/sync_clock.dart';
 import '../../features/session/domain/usecases/watch_commands.dart';
+import '../../features/session/domain/usecases/watch_peers.dart';
 import '../../features/session/data/datasources/recording_remote_datasource.dart';
 import '../../features/session/data/repositories/recording_repository_impl.dart';
 import '../../features/session/domain/repositories/recording_repository.dart';
@@ -89,6 +90,8 @@ void configureDependencies() {
     () => WatchIceCandidates(getIt<SignalingRepository>()),
   );
   getIt.registerFactory(() => ClearSignaling(getIt<SignalingRepository>()));
+  getIt.registerFactory(() => LookupSessionCode(getIt<SignalingRepository>()));
+  getIt.registerFactory(() => WatchPeers(getIt<SignalingRepository>()));
 
   // --- Camera ---
   getIt.registerLazySingleton<CameraLocalDataSource>(
@@ -100,7 +103,6 @@ void configureDependencies() {
   getIt.registerFactory(() => StartCapture(getIt<CameraRepository>()));
   getIt.registerFactory(() => StopCapture(getIt<CameraRepository>()));
   getIt.registerFactory(() => SwitchLens(getIt<CameraRepository>()));
-  getIt.registerLazySingleton(() => const ParseQrPayload());
   getIt.registerFactory(() => RegisterDevice(
     signalingRepository: getIt<SignalingRepository>(),
     cameraDataSource: getIt<CameraLocalDataSource>(),

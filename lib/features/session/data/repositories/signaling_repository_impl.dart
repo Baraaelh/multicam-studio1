@@ -102,4 +102,14 @@ class SignalingRepositoryImpl implements SignalingRepository {
   @override
   Stream<String?> watchDeviceName(String sessionId, String peerId) =>
       _dataSource.watchDeviceName(sessionId, peerId);
+
+  @override
+  Future<String?> lookupSessionCode(String code) =>
+      _dataSource.lookupSessionCode(code);
+
+  @override
+  Stream<List<({String peerId, String? deviceName})>> watchPeers(
+    String sessionId,
+  ) =>
+      _dataSource.watchPeers(sessionId);
 }

@@ -4,13 +4,13 @@ import '../../../../core/di/injection.dart';
 import '../../../../core/platform/camera_service_platform.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../../../session/domain/repositories/signaling_repository.dart';
+import '../../../session/domain/usecases/lookup_session_code.dart';
 import '../../../session/presentation/bindings/signaling_binding.dart';
 import '../../../session/presentation/controllers/clock_controller.dart';
 import '../../../session/presentation/controllers/signaling_controller.dart';
 import '../../data/datasources/camera_local_datasource.dart';
 import '../../data/services/recording_service.dart';
 import '../../data/services/transfer_server_service.dart';
-import '../../domain/usecases/parse_qr_payload.dart';
 import '../../domain/usecases/register_device.dart';
 import '../../domain/usecases/start_capture.dart';
 import '../../domain/usecases/stop_capture.dart';
@@ -30,7 +30,7 @@ class CameraBinding extends Bindings {
         startCapture: getIt<StartCapture>(),
         stopCapture: getIt<StopCapture>(),
         switchLens: getIt<SwitchLens>(),
-        parseQrPayload: getIt<ParseQrPayload>(),
+        lookupSessionCode: LookupSessionCode(getIt<SignalingRepository>()),
         registerDevice: RegisterDevice(
           signalingRepository: getIt<SignalingRepository>(),
           cameraDataSource: getIt<CameraLocalDataSource>(),

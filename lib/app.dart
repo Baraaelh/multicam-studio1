@@ -7,7 +7,7 @@ import 'features/admin/presentation/pages/admin_setup_page.dart';
 import 'features/admin/presentation/pages/render_page.dart';
 import 'features/camera/presentation/bindings/camera_binding.dart';
 import 'features/camera/presentation/pages/camera_page.dart';
-import 'features/camera/presentation/pages/qr_scan_page.dart';
+import 'features/camera/presentation/pages/qr_scan_page.dart' show CodeJoinPage;
 import 'features/session/presentation/bindings/signaling_binding.dart';
 
 class App extends StatelessWidget {
@@ -25,7 +25,7 @@ class App extends StatelessWidget {
         GetPage(name: '/', page: () => const _ModeSelectPage()),
         GetPage(
           name: '/camera/scan',
-          page: () => const QrScanPage(),
+          page: () => const CodeJoinPage(),
           binding: CameraBinding(),
         ),
         GetPage(name: '/camera', page: () => const CameraPage()),

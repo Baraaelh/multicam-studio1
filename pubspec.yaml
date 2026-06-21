@@ -22,9 +22,8 @@ dependencies:
   get: ^4.6.6
   get_it: ^7.6.7
 
-  # QR generation (Admin) + scanning (Camera)
-  qr_flutter: ^4.1.0
-  mobile_scanner: ^6.0.3
+  # Native share sheet for sharing session code
+  share_plus: ^10.0.0
 
   # UUID for session/peer IDs
   uuid: ^4.5.1

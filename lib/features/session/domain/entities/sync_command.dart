@@ -5,7 +5,12 @@ enum CommandType {
   stopRecording,
   muteCamera,
   unmuteCamera,
-  setZoom;
+  setZoom,
+  pauseCamera,
+  resumeCamera,
+  promoteToCoAdmin,
+  revokeCoAdmin,
+  switchActiveCamera;
 
   static CommandType? tryFromString(String s) =>
       CommandType.values.cast<CommandType?>().firstWhere(

@@ -143,6 +143,20 @@ class WebRtcService {
     await videoSender.replaceTrack(newTrack);
   }
 
+  /// Sets the enabled state on the audio RTCRtpSender for a peer.
+  /// More reliable than setting track.enabled on the MediaStream track because
+  /// the sender's track reference stays valid even after replaceTrack (lens switch).
+  Future<void> setAudioSenderEnabled(String peerId, bool enabled) async {
+    final pc = _connections[peerId];
+    if (pc == null) return;
+    final senders = await pc.getSenders();
+    for (final sender in senders) {
+      if (sender.track?.kind == 'audio') {
+        sender.track?.enabled = enabled;
+      }
+    }
+  }
+
   Future<void> closeConnection(String peerId) async {
     final pc = _connections.remove(peerId);
     if (pc == null) return;
