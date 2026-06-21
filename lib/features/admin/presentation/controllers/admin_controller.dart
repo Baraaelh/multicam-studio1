@@ -91,6 +91,9 @@ class AdminController extends GetxController {
   // Co-admin role tracking
   final coAdminPeerIds = RxSet<String>();
 
+  // Studio Audio Mode — when true, cameras record video-only, admin records audio.
+  final isStudioMode = false.obs;
+
   // Recording timer
   final recordingSeconds = 0.obs;
   Timer? _recordingTimer;
@@ -105,6 +108,9 @@ class AdminController extends GetxController {
   // Remote streams keyed by peerId — kept so toggleLiveAudio can reach audio tracks
   // after the initial onTrack event.
   final _remoteStreams = <String, webrtc.MediaStream>{};
+
+  // Studio Audio Mode: path to admin's audio-only recording, or null.
+  String? _adminAudioPath;
 
   // Auto-download state (set on Stop Recording, cleared when all files settle)
   bool _autoDownloadEnabled = false;
@@ -135,6 +141,8 @@ class AdminController extends GetxController {
   }
 
   String get adminId => _adminId;
+  String? get adminAudioPath => _adminAudioPath;
+  void toggleStudioMode() => isStudioMode.toggle();
 
   // ---------------------------------------------------------------------------
   // Setup phase
@@ -243,9 +251,24 @@ class AdminController extends GetxController {
           ));
     }
 
+    if (isStudioMode.value) {
+      final dir = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      _adminAudioPath = '${dir.path}/admin_audio_$timestamp.mp4';
+      try {
+        await _channel.invokeMethod<void>('startAdminAudioRecording', {
+          'outputPath': _adminAudioPath,
+        });
+      } catch (e) {
+        dev.log('startAdminAudioRecording failed: $e', name: 'AdminController');
+        _adminAudioPath = null;
+      }
+    }
+
     await _clockController.issueCommand(
       s.sessionId,
       CommandType.startRecording,
+      payload: isStudioMode.value ? {'studioMode': true} : null,
     );
     isRecording.value = true;
     recordingSeconds.value = 0;
@@ -267,6 +290,13 @@ class AdminController extends GetxController {
       CommandType.stopRecording,
       bufferMs: 1000,
     );
+    if (isStudioMode.value) {
+      try {
+        await _channel.invokeMethod<void>('stopAdminAudioRecording');
+      } catch (e) {
+        dev.log('stopAdminAudioRecording failed: $e', name: 'AdminController');
+      }
+    }
     isRecording.value = false;
     _recordingTimer?.cancel();
     _recordingTimer = null;
@@ -495,6 +525,7 @@ class AdminController extends GetxController {
         'inputPath': path,
         'startMs': fileStartMs,
         'durationMs': fileDurationMs,
+        'adminAudioStartMs': effectiveStartMs,
       });
     }
 
@@ -557,6 +588,8 @@ class AdminController extends GetxController {
     sessionCode.value = '';
     activePeerId.value = null;
     isRecording.value = false;
+    isStudioMode.value = false;
+    _adminAudioPath = null;
     _clockController.stopWatchingCommands();
     unawaited(_clearSessionFromDisk());
   }

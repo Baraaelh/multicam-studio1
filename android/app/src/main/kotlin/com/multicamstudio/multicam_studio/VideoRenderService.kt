@@ -123,13 +123,59 @@ object VideoRenderService {
      * intended cut point. This is the inherent accuracy limit of muxer-level
      * editing without re-encoding.
      */
-    fun mergeWithTimeline(segments: List<Map<String, Any>>, output: String) {
+    /**
+     * [adminAudioPath] — optional path to an audio-only MP4 recorded by the admin
+     * device (Studio Audio Mode). When provided:
+     *   • camera MP4 audio tracks are ignored (cameras recorded video-only)
+     *   • audio is extracted from [adminAudioPath] and muxed as the sole audio track
+     *   • each segment map must include "adminAudioStartMs" (Long) — the position
+     *     within [adminAudioPath] that aligns with the start of that video segment
+     */
+    fun mergeWithTimeline(
+        segments: List<Map<String, Any>>,
+        output: String,
+        adminAudioPath: String? = null,
+    ) {
         require(segments.isNotEmpty()) { "No segments" }
-        Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output")
+        Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output" +
+                if (adminAudioPath != null) " [studio audio: ${adminAudioPath.substringAfterLast('/')}]" else "")
+
+        // Diagnostic: log existence, size, and track info for every input file.
+        segments.forEach { seg ->
+            val p = seg["inputPath"] as String
+            val f = java.io.File(p)
+            Log.d(TAG, "input: ${p.substringAfterLast('/')} exists=${f.exists()} size=${f.length()}B")
+            if (f.exists()) {
+                val ext = MediaExtractor()
+                try {
+                    ext.setDataSource(p)
+                    Log.d(TAG, "  trackCount=${ext.trackCount}")
+                    for (i in 0 until ext.trackCount) {
+                        val fmt = ext.getTrackFormat(i)
+                        val mime = fmt.getString(MediaFormat.KEY_MIME) ?: "?"
+                        val w = try { fmt.getInteger(MediaFormat.KEY_WIDTH) } catch (_: Exception) { -1 }
+                        val h = try { fmt.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
+                        val dur = try { fmt.getLong(MediaFormat.KEY_DURATION) / 1_000 } catch (_: Exception) { -1L }
+                        Log.d(TAG, "  track[$i] $mime ${if (w > 0) "${w}×${h}" else ""} dur=${dur}ms")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "  probe exception: ${e.message}")
+                } finally {
+                    ext.release()
+                }
+            }
+        }
 
         // Validate every input file has a video track before touching the output muxer.
+        // Distinguish IO/open failures from genuinely missing video tracks.
         val badPaths = segments.mapNotNull { seg ->
             val p = seg["inputPath"] as String
+            val f = java.io.File(p)
+            if (!f.exists()) {
+                throw IllegalStateException(
+                    "Input file not found: ${p.substringAfterLast('/')} (full path: $p)"
+                )
+            }
             val ext = MediaExtractor()
             try {
                 ext.setDataSource(p)
@@ -138,8 +184,9 @@ object VideoRenderService {
                 }
                 if (hasVideo) null else p
             } catch (e: Exception) {
-                Log.e(TAG, "probe failed for ${p.substringAfterLast('/')}: ${e.message}")
-                p
+                throw IllegalStateException(
+                    "Cannot open ${p.substringAfterLast('/')}: ${e.message}"
+                )
             } finally {
                 ext.release()
             }
@@ -149,18 +196,32 @@ object VideoRenderService {
             throw IllegalStateException("No video track in: $names")
         }
 
-        // Probe the first segment's file to obtain track formats.
+        // Probe the first segment's file to obtain video format.
+        // Audio format comes from the admin audio file (Studio Mode) or the first camera file.
         val firstPath = segments[0]["inputPath"] as String
         val probe = MediaExtractor()
         val videoFormat: MediaFormat
-        val audioFormat: MediaFormat?
+        val cameraAudioFormat: MediaFormat?
         try {
             probe.setDataSource(firstPath)
             videoFormat = findFormat(probe, "video/")
                 ?: throw IllegalStateException("No video track in $firstPath")
-            audioFormat = findFormat(probe, "audio/")
+            cameraAudioFormat = if (adminAudioPath == null) findFormat(probe, "audio/") else null
         } finally {
             probe.release()
+        }
+
+        val audioFormat: MediaFormat? = if (adminAudioPath != null) {
+            val adminProbe = MediaExtractor()
+            try {
+                adminProbe.setDataSource(adminAudioPath)
+                findFormat(adminProbe, "audio/")
+                    ?: run { Log.w(TAG, "admin audio file has no audio track — output will be silent"); null }
+            } finally {
+                adminProbe.release()
+            }
+        } else {
+            cameraAudioFormat
         }
 
         // Validate all segments share the same resolution as the first file.
@@ -201,6 +262,14 @@ object VideoRenderService {
         var videoOutputOffsetUs = 0L
         var audioOutputOffsetUs = 0L
 
+        // Studio Mode: open admin audio extractor once; reuse across all segments.
+        val adminAudioExt: MediaExtractor? = if (adminAudioPath != null && muxAudioTrack >= 0) {
+            val ext = MediaExtractor()
+            ext.setDataSource(adminAudioPath)
+            val idx = findTrackIndex(ext, "audio/")
+            if (idx >= 0) { ext.selectTrack(idx); ext } else { ext.release(); null }
+        } else null
+
         try {
             for ((segIdx, seg) in segments.withIndex()) {
                 val inputPath = seg["inputPath"] as String
@@ -208,9 +277,14 @@ object VideoRenderService {
                 val durationMs = (seg["durationMs"] as Number).toLong()
                 val startUs = startMs * 1_000L
                 val endUs = startUs + durationMs * 1_000L
+                // Session-timeline position for admin audio (supplied by Dart buildRenderSegments).
+                val adminAudioStartMs = (seg["adminAudioStartMs"] as? Number)?.toLong() ?: startMs
+                val adminStartUs = adminAudioStartMs * 1_000L
+                val adminEndUs = adminStartUs + durationMs * 1_000L
 
                 Log.d(TAG, "segment[$segIdx]: path=${inputPath.substringAfterLast('/')} " +
-                        "startMs=$startMs endMs=${startMs + durationMs} durationMs=$durationMs")
+                        "startMs=$startMs endMs=${startMs + durationMs} durationMs=$durationMs" +
+                        if (adminAudioExt != null) " adminStartMs=$adminAudioStartMs" else "")
 
                 if (startUs >= endUs) {
                     Log.w(TAG, "segment[$segIdx]: degenerate (startUs >= endUs) — skipped")
@@ -222,12 +296,12 @@ object VideoRenderService {
                     ext.setDataSource(inputPath)
 
                     val inVideoTrack = findTrackIndex(ext, "video/")
-                    val inAudioTrack = findTrackIndex(ext, "audio/")
+                    // In Studio Mode cameras record video-only; skip camera audio track.
+                    val inAudioTrack = if (adminAudioExt == null) findTrackIndex(ext, "audio/") else -1
 
                     if (inVideoTrack >= 0) ext.selectTrack(inVideoTrack)
                     if (inAudioTrack >= 0 && muxAudioTrack >= 0) ext.selectTrack(inAudioTrack)
 
-                    // Seek to the keyframe at or immediately before startUs.
                     ext.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     val actualStartUs = if (ext.sampleTime >= 0) ext.sampleTime else 0L
 
@@ -238,8 +312,6 @@ object VideoRenderService {
                     var maxVideoUs = actualStartUs
                     var maxAudioUs = actualStartUs
 
-                    // Track per-track exhaustion separately so we don't drop samples
-                    // from one track just because the other track reached endUs first.
                     var videoExhausted = inVideoTrack < 0
                     var audioExhausted = inAudioTrack < 0 || muxAudioTrack < 0
                     var firstSampleWritten = false
@@ -247,7 +319,7 @@ object VideoRenderService {
                     while (true) {
                         buffer.clear()
                         val sampleSize = ext.readSampleData(buffer, 0)
-                        if (sampleSize < 0) break // end of file
+                        if (sampleSize < 0) break
 
                         val trackIndex = ext.sampleTrackIndex
                         val rawTime = ext.sampleTime
@@ -296,13 +368,41 @@ object VideoRenderService {
                         ext.advance()
                     }
 
-                    // Advance output offsets by the actual extracted duration + one frame gap.
-                    val videoDurationMs = (maxVideoUs - actualStartUs) / 1_000
-                    val audioDurationMs = (maxAudioUs - actualStartUs) / 1_000
                     videoOutputOffsetUs += (maxVideoUs - actualStartUs) + 33_333L
-                    audioOutputOffsetUs += (maxAudioUs - actualStartUs) + 22_676L
+
+                    // Studio Mode: extract admin audio for this segment's time window.
+                    if (adminAudioExt != null && muxAudioTrack >= 0) {
+                        adminAudioExt.seekTo(adminStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                        val adminActualStartUs = if (adminAudioExt.sampleTime >= 0) adminAudioExt.sampleTime else adminStartUs
+                        var maxAdminUs = adminActualStartUs
+
+                        while (true) {
+                            buffer.clear()
+                            val sampleSize = adminAudioExt.readSampleData(buffer, 0)
+                            if (sampleSize < 0) break
+                            val rawTime = adminAudioExt.sampleTime
+                            if (rawTime >= adminEndUs) break
+
+                            val adjustedTime = (rawTime - adminActualStartUs) + audioOutputOffsetUs
+                            if (rawTime > maxAdminUs) maxAdminUs = rawTime
+
+                            info.offset = 0
+                            info.size = sampleSize
+                            info.presentationTimeUs = adjustedTime
+                            info.flags = adminAudioExt.sampleFlags
+                            muxer.writeSampleData(muxAudioTrack, buffer, info)
+                            adminAudioExt.advance()
+                        }
+
+                        audioOutputOffsetUs += (maxAdminUs - adminActualStartUs) + 22_676L
+                        Log.d(TAG, "segment[$segIdx]: admin audio snapMs=${adminActualStartUs / 1_000} " +
+                                "durMs=${(maxAdminUs - adminActualStartUs) / 1_000}")
+                    } else {
+                        audioOutputOffsetUs += (maxAudioUs - actualStartUs) + 22_676L
+                    }
+
                     Log.d(TAG, "segment[$segIdx]: done — " +
-                            "videoDurationMs=$videoDurationMs audioDurationMs=$audioDurationMs " +
+                            "videoDurMs=${(maxVideoUs - actualStartUs) / 1_000} " +
                             "nextVideoOffsetMs=${videoOutputOffsetUs / 1_000} " +
                             "nextAudioOffsetMs=${audioOutputOffsetUs / 1_000}")
                 } finally {
@@ -310,6 +410,7 @@ object VideoRenderService {
                 }
             }
         } finally {
+            adminAudioExt?.release()
             muxer.stop()
             muxer.release()
             val sizeBytes = java.io.File(output).length()

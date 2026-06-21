@@ -27,6 +27,7 @@ class RecordingService {
   Future<void> startRecording({
     required webrtc.MediaStream stream,
     required String peerId,
+    bool recordAudio = true,
   }) async {
     if (_isRecording) return;
 
@@ -54,6 +55,7 @@ class RecordingService {
       await _channel.invokeMethod<void>('startRecording', {
         'trackId': videoTrack.id,
         'outputPath': filePath,
+        'recordAudio': recordAudio,
       });
       _currentFilePath = filePath;
       _isRecording = true;

@@ -24,6 +24,8 @@ class MainActivity : FlutterActivity() {
     private var currentRecorderTrack: VideoTrack? = null
     private var currentOutputPath: String? = null
 
+    private var adminAudioRecorder: AdminAudioRecorder? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
@@ -51,13 +53,14 @@ class MainActivity : FlutterActivity() {
                         val outputPath = call.argument<String>("output")
                         @Suppress("UNCHECKED_CAST")
                         val segments = call.argument<List<Map<String, Any>>>("segments")
+                        val adminAudioPath = call.argument<String>("adminAudioPath")
                         if (outputPath == null) {
                             result.error("INVALID_ARGS", "Missing output path", null)
                         } else {
                             Thread {
                                 try {
                                     if (!segments.isNullOrEmpty()) {
-                                        VideoRenderService.mergeWithTimeline(segments, outputPath)
+                                        VideoRenderService.mergeWithTimeline(segments, outputPath, adminAudioPath)
                                     } else {
                                         VideoRenderService.mergeSequential(inputs, outputPath)
                                     }
@@ -73,6 +76,7 @@ class MainActivity : FlutterActivity() {
                     "startRecording" -> {
                         val trackId = call.argument<String>("trackId")
                         val outputPath = call.argument<String>("outputPath")
+                        val recordAudio = call.argument<Boolean>("recordAudio") ?: true
                         if (trackId == null || outputPath == null) {
                             result.error("INVALID_ARGS", "Missing trackId or outputPath", null)
                             return@setMethodCallHandler
@@ -95,17 +99,41 @@ class MainActivity : FlutterActivity() {
                         }
                         try {
                             val recorder = I420VideoRecorder(outputPath)
-                            recorder.start()
+                            recorder.start(recordAudio)
                             videoTrack.addSink(recorder)
                             currentRecorder = recorder
                             currentRecorderTrack = videoTrack
                             currentOutputPath = outputPath
-                            Log.d(tag, "startRecording OK → $outputPath")
+                            Log.d(tag, "startRecording OK recordAudio=$recordAudio → $outputPath")
                             result.success(null)
                         } catch (e: Exception) {
                             Log.e(tag, "startRecording failed: ${e.message}", e)
                             result.error("RECORD_FAILED", e.message, null)
                         }
+                    }
+                    "startAdminAudioRecording" -> {
+                        val outputPath = call.argument<String>("outputPath")
+                        if (outputPath == null) {
+                            result.error("INVALID_ARGS", "Missing outputPath", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            adminAudioRecorder?.stop {}
+                            val rec = AdminAudioRecorder(outputPath)
+                            rec.start()
+                            adminAudioRecorder = rec
+                            Log.d(tag, "startAdminAudioRecording OK → $outputPath")
+                            result.success(null)
+                        } catch (e: Exception) {
+                            Log.e(tag, "startAdminAudioRecording failed: ${e.message}", e)
+                            result.error("RECORD_FAILED", e.message, null)
+                        }
+                    }
+                    "stopAdminAudioRecording" -> {
+                        val rec = adminAudioRecorder
+                        adminAudioRecorder = null
+                        if (rec == null) { result.success(null); return@setMethodCallHandler }
+                        rec.stop { runOnUiThread { result.success(null) } }
                     }
                     "stopRecording" -> {
                         val recorder = currentRecorder

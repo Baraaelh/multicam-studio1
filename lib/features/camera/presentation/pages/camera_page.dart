@@ -23,6 +23,7 @@ class CameraPage extends GetView<CameraController> {
         final label = controller.slotLabel.value;
         final pin = controller.sessionPin.value;
         final isRecording = controller.isRecording.value;
+        final isStudioMode = controller.isStudioMode.value;
 
         return Stack(
           children: [
@@ -58,6 +59,7 @@ class CameraPage extends GetView<CameraController> {
             _SyncBadge(),
 
             if (isRecording) _RecordingBadge(),
+            if (isRecording && isStudioMode) _VideoOnlyBadge(),
 
             _BottomControls(
               lens: state.lens,
@@ -291,6 +293,35 @@ class _RecordingBadge extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoOnlyBadge extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 46,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.purple.withValues(alpha: 0.88),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            'VIDEO ONLY',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 11,
+              letterSpacing: 1.2,
+            ),
           ),
         ),
       ),

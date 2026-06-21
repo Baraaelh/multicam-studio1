@@ -36,14 +36,19 @@ class RenderService extends GetxService {
   // Non-empty → timeline render; empty → sequential concatenation fallback.
   final segments = RxList<Map<String, dynamic>>();
 
+  // Studio Audio Mode: path to admin's audio-only recording, or null.
+  String? _adminAudioPath;
+
   /// Called by TransferSheet before navigating to the render page.
   void prepare(
     List<RenderSource> renderSources, {
     List<Map<String, dynamic>>? segments,
+    String? adminAudioPath,
   }) {
     if (isRendering.value) return;
     sources.assignAll(renderSources);
     this.segments.assignAll(segments ?? []);
+    _adminAudioPath = adminAudioPath;
     outputPath.value = null;
     errorMessage.value = null;
     renderProgress.value = 0;
@@ -66,6 +71,7 @@ class RenderService extends GetxService {
       inputPaths: paths,
       outputPath: output,
       segments: segments.isEmpty ? null : List<Map<String, dynamic>>.from(segments),
+      adminAudioPath: _adminAudioPath,
       onProgress: (p) => renderProgress.value = p,
       onComplete: (path) {
         outputPath.value = path;

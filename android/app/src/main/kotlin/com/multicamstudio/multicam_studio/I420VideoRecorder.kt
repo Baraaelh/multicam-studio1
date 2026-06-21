@@ -80,11 +80,13 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Throws(IOException::class)
-    fun start() {
+    fun start(recordAudio: Boolean = true) {
         muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         isRunning.set(true)
-        startAudioCapture()
-        Log.d(TAG, "start() → $outputPath")
+        if (recordAudio) startAudioCapture()
+        // When recordAudio=false, audioAvailable stays false so maybeStartMuxer
+        // starts the muxer on video format alone — producing a video-only MP4.
+        Log.d(TAG, "start(recordAudio=$recordAudio) → $outputPath")
     }
 
     // ── VideoSink ─────────────────────────────────────────────────────────────

@@ -133,7 +133,7 @@ void _prepareAndNavigate(AdminController ctrl) {
   // can produce a single video following the exact switching order.
   final segments = ctrl.buildRenderSegments();
 
-  Get.find<RenderService>().prepare(sources, segments: segments);
+  Get.find<RenderService>().prepare(sources, segments: segments, adminAudioPath: ctrl.adminAudioPath);
   Get.back<void>();
   Get.toNamed<void>('/admin/render');
 }

@@ -73,6 +73,7 @@ class CameraController extends GetxController {
   final isPaused = false.obs;
   final isCoAdmin = false.obs;
   final coAdminSlots = RxList<Map<String, String>>();
+  final isStudioMode = false.obs;
 
   webrtc.MediaStream? _localStream;
   QrPayload? _payload;
@@ -174,6 +175,7 @@ class CameraController extends GetxController {
     switch (cmd.type) {
       case CommandType.startRecording:
         isRecording.value = true;
+        if (cmd.payload?['studioMode'] == true) isStudioMode.value = true;
         unawaited(_startRecording());
       case CommandType.stopRecording:
         isRecording.value = false;
@@ -269,6 +271,7 @@ class CameraController extends GetxController {
     await _recordingService.startRecording(
       stream: stream,
       peerId: payload.peerId,
+      recordAudio: !isStudioMode.value,
     );
   }
 
@@ -387,6 +390,7 @@ class CameraController extends GetxController {
     isPaused.value = false;
     isCoAdmin.value = false;
     coAdminSlots.clear();
+    isStudioMode.value = false;
 
     await _recordingService.dispose();
     await _signalingController.disconnect(payload.sessionId, payload.peerId);

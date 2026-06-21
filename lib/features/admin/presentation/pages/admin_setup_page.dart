@@ -165,32 +165,48 @@ class _BottomActions extends StatelessWidget {
     return Obx(() {
       final s = controller.session.value;
       final isStarting = controller.isStarting.value;
+      final isStudioMode = controller.isStudioMode.value;
 
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: FilledButton.icon(
-            onPressed: (s != null && !isStarting)
-                ? () async {
-                    await controller.startSession();
-                    Get.to<void>(() => const AdminLivePage());
-                  }
-                : null,
-            icon: isStarting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.play_circle),
-            label: Text(isStarting ? 'Starting…' : 'Go Live'),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size.fromHeight(50),
-              backgroundColor: Colors.red.shade700,
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (s != null)
+                SwitchListTile(
+                  title: const Text('Studio Audio Mode'),
+                  subtitle: const Text(
+                    'Admin mic replaces all camera audio in the render',
+                  ),
+                  value: isStudioMode,
+                  onChanged: (_) => controller.toggleStudioMode(),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+              FilledButton.icon(
+                onPressed: (s != null && !isStarting)
+                    ? () async {
+                        await controller.startSession();
+                        Get.to<void>(() => const AdminLivePage());
+                      }
+                    : null,
+                icon: isStarting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.play_circle),
+                label: Text(isStarting ? 'Starting…' : 'Go Live'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(50),
+                  backgroundColor: Colors.red.shade700,
+                ),
+              ),
+            ],
           ),
         ),
       );

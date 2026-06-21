@@ -15,6 +15,7 @@ class FfmpegService {
     required List<String> inputPaths,
     required String outputPath,
     List<Map<String, dynamic>>? segments,
+    String? adminAudioPath,
     void Function(double progress)? onProgress,
     void Function(String error)? onError,
     void Function(String outputPath)? onComplete,
@@ -25,6 +26,7 @@ class FfmpegService {
         'inputs': inputPaths,
         'output': outputPath,
         if (segments != null && segments.isNotEmpty) 'segments': segments,
+        if (adminAudioPath != null) 'adminAudioPath': adminAudioPath,
       });
       onProgress?.call(1.0);
       onComplete?.call(outputPath);
