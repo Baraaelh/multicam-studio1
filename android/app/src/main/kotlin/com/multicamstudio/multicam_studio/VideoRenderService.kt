@@ -144,12 +144,14 @@ object VideoRenderService {
         Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output" +
                 if (adminAudioPath != null) " [studio audio: ${adminAudioPath.substringAfterLast('/')}]" else "")
 
-        // Diagnostic: log existence, size, and track info for every input file.
+        // Diagnostic: log full metadata for every input file before touching the muxer.
         segments.forEach { seg ->
             val p = seg["inputPath"] as String
             val f = java.io.File(p)
             Log.d(TAG, "input: ${p.substringAfterLast('/')} exists=${f.exists()} size=${f.length()}B")
             if (f.exists()) {
+                val rotation = try { readRotation(p) } catch (e: Exception) { -1 }
+                Log.d(TAG, "  rotation=${rotation}°")
                 val ext = MediaExtractor()
                 try {
                     ext.setDataSource(p)
@@ -161,6 +163,8 @@ object VideoRenderService {
                         val h = try { fmt.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
                         val dur = try { fmt.getLong(MediaFormat.KEY_DURATION) / 1_000 } catch (_: Exception) { -1L }
                         Log.d(TAG, "  track[$i] $mime ${if (w > 0) "${w}×${h}" else ""} dur=${dur}ms")
+                        if (mime.startsWith("video/") && dur <= 0L)
+                            Log.w(TAG, "  WARNING: video track has zero/negative duration (dur=$dur)")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "  probe exception: ${e.message}")
@@ -170,8 +174,8 @@ object VideoRenderService {
             }
         }
 
-        // Validate every input file has a video track before touching the output muxer.
-        // Distinguish IO/open failures from genuinely missing video tracks.
+        // Validate every input file before touching the output muxer.
+        // Checks: exists, non-empty, openable, has video track, video duration > 0.
         val badPaths = segments.mapNotNull { seg ->
             val p = seg["inputPath"] as String
             val f = java.io.File(p)
@@ -180,13 +184,32 @@ object VideoRenderService {
                     "Input file not found: ${p.substringAfterLast('/')} (full path: $p)"
                 )
             }
+            if (f.length() == 0L) {
+                throw IllegalStateException(
+                    "Input file is empty (0 bytes): ${p.substringAfterLast('/')}"
+                )
+            }
             val ext = MediaExtractor()
             try {
                 ext.setDataSource(p)
-                val hasVideo = (0 until ext.trackCount).any {
-                    ext.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                var hasVideo = false
+                var videoDur = -1L
+                for (i in 0 until ext.trackCount) {
+                    val fmt = ext.getTrackFormat(i)
+                    if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
+                        hasVideo = true
+                        videoDur = try { fmt.getLong(MediaFormat.KEY_DURATION) } catch (_: Exception) { -1L }
+                        break
+                    }
                 }
-                if (hasVideo) null else p
+                if (!hasVideo) {
+                    Log.e(TAG, "VALIDATION FAIL — no video track: ${p.substringAfterLast('/')} trackCount=${ext.trackCount}")
+                    p
+                } else {
+                    if (videoDur <= 0L)
+                        Log.w(TAG, "VALIDATION WARN — video track duration=$videoDur in ${p.substringAfterLast('/')}")
+                    null
+                }
             } catch (e: Exception) {
                 throw IllegalStateException(
                     "Cannot open ${p.substringAfterLast('/')}: ${e.message}"
@@ -417,8 +440,32 @@ object VideoRenderService {
             adminAudioExt?.release()
             muxer.stop()
             muxer.release()
-            val sizeBytes = java.io.File(output).length()
+            val outFile = java.io.File(output)
+            val sizeBytes = outFile.length()
             Log.d(TAG, "mergeWithTimeline: complete — sizeBytes=$sizeBytes path=$output")
+
+            // Post-render output probe — confirm the merged file is playable.
+            if (outFile.exists() && sizeBytes > 0) {
+                val outExt = MediaExtractor()
+                try {
+                    outExt.setDataSource(output)
+                    Log.d(TAG, "output probe: trackCount=${outExt.trackCount}")
+                    for (i in 0 until outExt.trackCount) {
+                        val fmt = outExt.getTrackFormat(i)
+                        val mime = fmt.getString(MediaFormat.KEY_MIME) ?: "?"
+                        val w = try { fmt.getInteger(MediaFormat.KEY_WIDTH) } catch (_: Exception) { -1 }
+                        val h = try { fmt.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
+                        val dur = try { fmt.getLong(MediaFormat.KEY_DURATION) / 1_000 } catch (_: Exception) { -1L }
+                        Log.d(TAG, "  output track[$i] $mime ${if (w > 0) "${w}×${h}" else ""} dur=${dur}ms")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "output probe failed: ${e.message}")
+                } finally {
+                    outExt.release()
+                }
+            } else {
+                Log.e(TAG, "mergeWithTimeline: output file missing or empty after muxer.stop()")
+            }
         }
     }
 

@@ -1,3 +1,6 @@
+import 'dart:developer' as dev;
+import 'dart:io';
+
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -54,10 +57,56 @@ class RenderService extends GetxService {
     renderProgress.value = 0;
   }
 
+  static const _tag = 'RenderService';
+
   Future<void> startRender() async {
     final paths = sources.map((s) => s.path).toList();
     if (paths.isEmpty) return;
 
+    // ── pre-render validation ─────────────────────────────────────────────────
+    dev.log(
+      'startRender: ${sources.length} source(s), ${segments.length} segment(s)'
+      '${_adminAudioPath != null ? ', studioAudio=${_adminAudioPath!.split('/').last}' : ''}',
+      name: _tag,
+    );
+
+    for (final source in sources) {
+      final file = File(source.path);
+      final exists = file.existsSync();
+      final size = exists ? file.lengthSync() : -1;
+      dev.log(
+        'source: ${source.filename} label="${source.label}" exists=$exists sizeBytes=$size',
+        name: _tag,
+      );
+      if (!exists) {
+        errorMessage.value = 'Input file not found: ${source.filename}';
+        dev.log('startRender ABORTED — file not found: ${source.path}', name: _tag);
+        return;
+      }
+      if (size == 0) {
+        errorMessage.value = 'Input file is empty (0 bytes): ${source.filename}';
+        dev.log('startRender ABORTED — empty file: ${source.path}', name: _tag);
+        return;
+      }
+    }
+
+    if (segments.isNotEmpty) {
+      dev.log('segments (${segments.length}):', name: _tag);
+      for (var i = 0; i < segments.length; i++) {
+        final seg = segments[i];
+        final name = (seg['inputPath'] as String? ?? '').split('/').last;
+        dev.log(
+          '  [$i] file=$name startMs=${seg['startMs']} '
+          'durationMs=${seg['durationMs']}'
+          '${seg.containsKey('adminAudioStartMs') ? ' adminAudioStartMs=${seg['adminAudioStartMs']}' : ''}',
+          name: _tag,
+        );
+      }
+    } else {
+      dev.log('no timeline segments — will use sequential merge', name: _tag);
+    }
+
+    // ── kick off native render ────────────────────────────────────────────────
     isRendering.value = true;
     renderProgress.value = 0;
     outputPath.value = null;
@@ -66,6 +115,7 @@ class RenderService extends GetxService {
     final dir = await getApplicationDocumentsDirectory();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final output = '${dir.path}/render_$timestamp.mp4';
+    dev.log('output path: $output', name: _tag);
 
     await _ffmpegService.renderGrid(
       inputPaths: paths,
@@ -74,12 +124,18 @@ class RenderService extends GetxService {
       adminAudioPath: _adminAudioPath,
       onProgress: (p) => renderProgress.value = p,
       onComplete: (path) {
+        final size = File(path).existsSync() ? File(path).lengthSync() : -1;
+        dev.log(
+          'startRender COMPLETE — sizeBytes=$size path=$path',
+          name: _tag,
+        );
         outputPath.value = path;
         isRendering.value = false;
         renderProgress.value = 1.0;
         _ffmpegService.saveToPublicStorage(path, path.split('/').last);
       },
       onError: (err) {
+        dev.log('startRender FAILED — $err', name: _tag);
         errorMessage.value = err;
         isRendering.value = false;
       },

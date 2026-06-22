@@ -354,6 +354,18 @@ class AdminController extends GetxController {
         'downloadRecording: saved $received bytes → $savePath',
         name: 'AdminController',
       );
+      final savedSize = await File(savePath).length();
+      if (savedSize == 0) {
+        dev.log(
+          'downloadRecording: WARNING — file is 0 bytes after save: $savePath',
+          name: 'AdminController',
+        );
+      } else {
+        dev.log(
+          'downloadRecording: file OK — sizeBytes=$savedSize path=$savePath',
+          name: 'AdminController',
+        );
+      }
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
       _saveToPublicStorage(savePath, info.filename);
@@ -474,7 +486,21 @@ class AdminController extends GetxController {
   List<Map<String, dynamic>> buildRenderSegments() {
     final startedAt = _recordingStartedAt;
     final stoppedAt = _recordingStoppedAt;
+
+    dev.log(
+      'buildRenderSegments: startedAt=$startedAt stoppedAt=$stoppedAt '
+      'switchHistory=${switchHistory.length} recordings=${recordings.length} '
+      'downloaded=${downloadedPaths.length}',
+      name: 'AdminController',
+    );
+
     if (startedAt == null || stoppedAt == null || switchHistory.isEmpty) {
+      dev.log(
+        'buildRenderSegments: returning [] — '
+        'startedAt=${startedAt != null} stoppedAt=${stoppedAt != null} '
+        'switchHistory=${switchHistory.length}',
+        name: 'AdminController',
+      );
       return [];
     }
 
@@ -482,12 +508,38 @@ class AdminController extends GetxController {
     final peerToPath = <String, String>{};
     for (final info in recordings) {
       final path = downloadedPaths[info.filename];
-      if (path != null) peerToPath[info.peerId] = path;
+      if (path != null) {
+        peerToPath[info.peerId] = path;
+        dev.log(
+          'buildRenderSegments: peerId=${info.peerId.substring(0, 8)} → ${info.filename}',
+          name: 'AdminController',
+        );
+      } else {
+        dev.log(
+          'buildRenderSegments: peerId=${info.peerId.substring(0, 8)} — '
+          'no downloaded path for ${info.filename} (skipped)',
+          name: 'AdminController',
+        );
+      }
     }
 
     final events = List<SwitchEvent>.from(switchHistory);
     final totalMs =
         stoppedAt.difference(startedAt).inMilliseconds.clamp(0, 999999);
+
+    dev.log(
+      'buildRenderSegments: totalDurationMs=$totalMs  events=${events.length}',
+      name: 'AdminController',
+    );
+    for (var i = 0; i < events.length; i++) {
+      final offsetMs = events[i].timestamp.difference(startedAt).inMilliseconds;
+      dev.log(
+        'buildRenderSegments: event[$i] peerId=${events[i].peerId.substring(0, 8)} '
+        'offsetMs=$offsetMs',
+        name: 'AdminController',
+      );
+    }
+
     final segments = <Map<String, dynamic>>[];
 
     for (var i = 0; i < events.length; i++) {
@@ -506,10 +558,16 @@ class AdminController extends GetxController {
           : totalMs;
 
       final path = peerToPath[peerId];
-      if (path == null) continue;
+      if (path == null) {
+        dev.log(
+          'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} — '
+          'no downloaded file, skipping',
+          name: 'AdminController',
+        );
+        continue;
+      }
 
       // Late-joining cameras start recording after the global session origin.
-      // Adjust the file seek offset and trim any portion before the camera joined.
       final cameraStartedAt = _cameraRecordingStartAt[peerId] ?? startedAt;
       final joinOffsetMs =
           cameraStartedAt.difference(startedAt).inMilliseconds.clamp(0, totalMs);
@@ -517,18 +575,38 @@ class AdminController extends GetxController {
       final effectiveStartMs = segStartMs.clamp(joinOffsetMs, totalMs);
       final effectiveEndMs = segEndMs.clamp(joinOffsetMs, totalMs);
       final fileDurationMs = effectiveEndMs - effectiveStartMs;
-      if (fileDurationMs <= 0) continue;
+
+      if (fileDurationMs <= 0) {
+        dev.log(
+          'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} — '
+          'fileDurationMs=$fileDurationMs ≤ 0, skipping '
+          '(segStartMs=$segStartMs segEndMs=$segEndMs joinOffsetMs=$joinOffsetMs)',
+          name: 'AdminController',
+        );
+        continue;
+      }
 
       final fileStartMs = effectiveStartMs - joinOffsetMs;
-
-      segments.add({
+      final seg = {
         'inputPath': path,
         'startMs': fileStartMs,
         'durationMs': fileDurationMs,
         'adminAudioStartMs': effectiveStartMs,
-      });
+      };
+      segments.add(seg);
+      dev.log(
+        'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} '
+        'file=${path.split('/').last} '
+        'startMs=$fileStartMs durationMs=$fileDurationMs '
+        'adminAudioStartMs=$effectiveStartMs',
+        name: 'AdminController',
+      );
     }
 
+    dev.log(
+      'buildRenderSegments: produced ${segments.length} segment(s)',
+      name: 'AdminController',
+    );
     return segments;
   }
 

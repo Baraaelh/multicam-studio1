@@ -15,6 +15,7 @@ import org.webrtc.VideoSink
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Records a WebRTC VideoTrack plus device microphone to a single MP4 file.
@@ -51,6 +52,7 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
 
     // ── shared ────────────────────────────────────────────────────────────────
     private val isRunning = AtomicBoolean(false)
+    private val frameCount = AtomicLong(0)
     private var muxer: MediaMuxer? = null
     private var muxerStarted = false
     private val muxerLock = Any()
@@ -87,6 +89,7 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
 
     @Throws(IOException::class)
     fun start(recordAudio: Boolean = true) {
+        frameCount.set(0)
         muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         isRunning.set(true)
         if (recordAudio) startAudioCapture()
@@ -99,6 +102,7 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
 
     override fun onFrame(frame: VideoFrame) {
         if (!isRunning.get()) { frame.release(); return }
+        frameCount.incrementAndGet()
         frame.retain()
         videoHandler.post { processVideoFrame(frame) }
     }
@@ -438,7 +442,9 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                         mux.release(); muxer = null; muxerStarted = false
                     }
                     val fileSize = java.io.File(outputPath).length()
-                    Log.d(TAG, "stop() complete — ${TARGET_WIDTH}×${TARGET_HEIGHT} v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0} sizeBytes=$fileSize path=$outputPath")
+                    Log.d(TAG, "stop() complete — ${TARGET_WIDTH}×${TARGET_HEIGHT} " +
+                            "frames=${frameCount.get()} v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0} " +
+                            "sizeBytes=$fileSize path=${outputPath.substringAfterLast('/')}")
                 } catch (e: Exception) { Log.e(TAG, "muxer stop error: ${e.message}", e) }
 
                 onDone()
