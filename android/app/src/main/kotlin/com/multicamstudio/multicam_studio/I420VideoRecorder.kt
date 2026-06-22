@@ -34,6 +34,12 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
         private const val VIDEO_FRAME_RATE = 30
         private const val VIDEO_I_FRAME_INTERVAL = 0 // 0 = every frame is a keyframe; eliminates pre-roll on cuts
 
+        // All recordings are normalised to this resolution regardless of what the
+        // WebRTC VideoSink delivers. This prevents resolution-mismatch errors when
+        // devices (or ABR on the same device) deliver frames at different sizes.
+        private const val TARGET_WIDTH  = 1280
+        private const val TARGET_HEIGHT = 720
+
         // Audio
         private const val AUDIO_MIME = "audio/mp4a-latm"
         private const val AUDIO_SAMPLE_RATE = 44_100
@@ -139,26 +145,23 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             }
             try {
                 val fw = i420.width; val fh = i420.height
-                when {
-                    videoEncoder == null -> {
-                        initVideoEncoder(fw, fh)
-                        muxer?.setOrientationHint(frame.rotation)
-                    }
-                    fw != encoderWidth || fh != encoderHeight -> {
-                        if (!muxerStarted) {
-                            videoEncoder?.stop(); videoEncoder?.release(); videoEncoder = null
-                            initVideoEncoder(fw, fh)
-                            muxer?.setOrientationHint(frame.rotation)
-                        } else {
-                            Log.w(TAG, "resolution mismatch mid-stream, skipping"); return
-                        }
+                if (videoEncoder == null) {
+                    initVideoEncoder(TARGET_WIDTH, TARGET_HEIGHT)
+                    muxer?.setOrientationHint(frame.rotation)
+                    if (fw != TARGET_WIDTH || fh != TARGET_HEIGHT) {
+                        Log.d(TAG, "source frame ${fw}×${fh} — scaling to ${TARGET_WIDTH}×${TARGET_HEIGHT}")
                     }
                 }
                 val enc = videoEncoder ?: return
                 val idx = enc.dequeueInputBuffer(10_000L)
                 if (idx < 0) return
                 val buf = enc.getInputBuffer(idx) ?: run { enc.queueInputBuffer(idx, 0, 0, 0, 0); return }
-                buf.clear(); writeNV12(i420, buf, encoderStride, encoderSliceHeight)
+                buf.clear()
+                if (fw == TARGET_WIDTH && fh == TARGET_HEIGHT) {
+                    writeNV12(i420, buf, encoderStride, encoderSliceHeight)
+                } else {
+                    writeNV12Scaled(i420, buf, encoderStride, encoderSliceHeight)
+                }
                 enc.queueInputBuffer(idx, 0, buf.position(), frame.timestampNs / 1_000L, 0)
             } finally { i420.release() }
             drainVideoEncoder(false)
@@ -193,6 +196,46 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
             dst.put(uvRow, 0, stride)
         }
         for (row in cH until sliceHeight / 2) dst.put(pad, 0, stride)
+    }
+
+    // Nearest-neighbour scale from source I420 dimensions to TARGET_WIDTH × TARGET_HEIGHT,
+    // then interleave into NV12 with encoder stride/slice padding.
+    private fun writeNV12Scaled(i420: VideoFrame.I420Buffer, dst: ByteBuffer, stride: Int, sliceHeight: Int) {
+        val srcW = i420.width; val srcH = i420.height
+        val srcCW = (srcW + 1) / 2; val srcCH = (srcH + 1) / 2
+        val dstCW = (TARGET_WIDTH + 1) / 2; val dstCH = (TARGET_HEIGHT + 1) / 2
+        val xRatioY = srcW.toFloat() / TARGET_WIDTH
+        val yRatioY = srcH.toFloat() / TARGET_HEIGHT
+        val xRatioC = srcCW.toFloat() / dstCW
+        val yRatioC = srcCH.toFloat() / dstCH
+        val pad = ByteArray(stride)
+
+        val yRow = ByteArray(stride)
+        for (dy in 0 until TARGET_HEIGHT) {
+            val sy = (dy * yRatioY).toInt().coerceIn(0, srcH - 1)
+            val srcOff = sy * i420.strideY
+            for (dx in 0 until TARGET_WIDTH) {
+                val sx = (dx * xRatioY).toInt().coerceIn(0, srcW - 1)
+                yRow[dx] = i420.dataY.get(srcOff + sx)
+            }
+            dst.put(yRow, 0, stride)
+        }
+        for (row in TARGET_HEIGHT until sliceHeight) dst.put(pad, 0, stride)
+
+        val uvRow = ByteArray(stride)
+        for (dy in 0 until dstCH) {
+            val sy = (dy * yRatioC).toInt().coerceIn(0, srcCH - 1)
+            val uOff = sy * i420.strideU
+            val vOff = sy * i420.strideV
+            var j = 0
+            for (dx in 0 until dstCW) {
+                val sx = (dx * xRatioC).toInt().coerceIn(0, srcCW - 1)
+                uvRow[j++] = i420.dataU.get(uOff + sx)
+                uvRow[j++] = i420.dataV.get(vOff + sx)
+            }
+            dst.put(uvRow, 0, stride)
+        }
+        for (row in dstCH until sliceHeight / 2) dst.put(pad, 0, stride)
     }
 
     private fun drainVideoEncoder(endOfStream: Boolean) {
@@ -395,7 +438,7 @@ class I420VideoRecorder(private val outputPath: String) : VideoSink {
                         mux.release(); muxer = null; muxerStarted = false
                     }
                     val fileSize = java.io.File(outputPath).length()
-                    Log.d(TAG, "stop() complete — v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0} audioTrack=$audioTrackIdx sizeBytes=$fileSize path=$outputPath")
+                    Log.d(TAG, "stop() complete — ${TARGET_WIDTH}×${TARGET_HEIGHT} v=${videoTrackIdx >= 0} a=${audioTrackIdx >= 0} sizeBytes=$fileSize path=$outputPath")
                 } catch (e: Exception) { Log.e(TAG, "muxer stop error: ${e.message}", e) }
 
                 onDone()
