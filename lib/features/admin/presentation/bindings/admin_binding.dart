@@ -28,7 +28,7 @@ class AdminBinding extends Bindings {
         endSession: getIt<EndSession>(),
         webRtcService: getIt<WebRtcService>(),
         signalingController: Get.find<SignalingController>(),
-        watchDeviceName: WatchDeviceName(getIt<SignalingRepository>()),
+        watchDeviceName: getIt<WatchDeviceName>(),
         clockController: Get.find<ClockController>(),
         watchRecordings: WatchRecordings(getIt<RecordingRepository>()),
         watchPeers: WatchPeers(getIt<SignalingRepository>()),

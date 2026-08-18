@@ -14,8 +14,10 @@ import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../../core/services/webrtc_service.dart';
+import '../services/render_service.dart';
 import '../../../session/domain/entities/peer_connection_state.dart';
 import '../../../session/domain/entities/recording_info.dart';
+import '../../../session/domain/entities/recording_profile.dart';
 import '../../../session/domain/entities/switch_event.dart';
 import '../../../session/domain/entities/sync_command.dart';
 import '../../../session/domain/usecases/watch_peers.dart';
@@ -29,6 +31,13 @@ import '../../domain/usecases/create_session.dart';
 import '../../domain/usecases/end_session.dart';
 import '../../domain/usecases/watch_device_name.dart';
 
+/// AdminController manages the admin (director) side of a live production.
+///
+/// Flow:
+/// 1. Cameras record locally (native I420VideoRecorder)
+/// 2. When recording stops, cameras publish RecordingInfo to Firestore
+/// 3. Admin auto-downloads each recording file from the camera's LAN server
+/// 4. When all downloads complete, auto-merges into one video using FFmpeg
 class AdminController extends GetxController {
   final CreateSession _createSession;
   final EndSession _endSession;
@@ -83,16 +92,19 @@ class AdminController extends GetxController {
   final zoomLevels = <String, double>{}.obs;
   final pausedCameras = <String, bool>{}.obs;
 
-  // Admin-side live audio monitoring (local only — no commands sent to cameras).
-  // true = admin hears this camera; false = silent on admin device.
-  // First camera to join is unmuted; all others default to muted.
+  // Admin-side live audio monitoring
   final liveAudioEnabled = <String, bool>{}.obs;
 
   // Co-admin role tracking
   final coAdminPeerIds = RxSet<String>();
 
-  // Studio Audio Mode — when true, cameras record video-only, admin records audio.
+  // Studio Audio Mode
   final isStudioMode = false.obs;
+
+  // Camera capability discovery and profile selection
+  final cameraCapabilities = <String, List<RecordingProfile>>{}.obs;
+  final compatibleProfiles = RxList<RecordingProfile>();
+  final selectedProfile = Rx<RecordingProfile?>(null);
 
   // Recording timer
   final recordingSeconds = 0.obs;
@@ -105,22 +117,22 @@ class AdminController extends GetxController {
   // Per-camera actual recording start (differs for late-joining cameras)
   final _cameraRecordingStartAt = <String, DateTime>{};
 
-  // Remote streams keyed by peerId — kept so toggleLiveAudio can reach audio tracks
-  // after the initial onTrack event.
+  // Remote streams
   final _remoteStreams = <String, webrtc.MediaStream>{};
 
   // Studio Audio Mode: path to admin's audio-only recording, or null.
   String? _adminAudioPath;
 
-  // Auto-download state (set on Stop Recording, cleared when all files settle)
+  // Auto-download + auto-merge state
   bool _autoDownloadEnabled = false;
+  bool _autoMergeStarted = false;
 
   // --- Internals ---
-  late final String _adminId;
+  late String _adminId;
   final _deviceNameSubs = <String, StreamSubscription<String?>>{};
   StreamSubscription<RemoteStreamEvent>? _remoteStreamSub;
   StreamSubscription<List<RecordingInfo>>? _recordingSub;
-  StreamSubscription<List<({String peerId, String? deviceName})>>? _peerListSub;
+  StreamSubscription<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>>? _peerListSub;
   Worker? _peerStatusWorker;
   Worker? _switchWorker;
 
@@ -134,15 +146,20 @@ class AdminController extends GetxController {
       _signalingController.peers,
       _syncPeerStatuses,
     );
-    // Watch pendingCommand to process co-admin camera-switch requests.
     _switchWorker = ever(_clockController.pendingCommand, _onCoAdminCommand);
-    // Attempt to restore a previous session if the app was killed mid-recording.
     unawaited(_tryRecoverFromDisk());
   }
 
   String get adminId => _adminId;
   String? get adminAudioPath => _adminAudioPath;
   void toggleStudioMode() => isStudioMode.toggle();
+
+  /// Verifies that the current session belongs to this admin before sending
+  /// any commands. Prevents a stale or hijacked session from being controlled.
+  bool _isValidSession() {
+    final s = session.value;
+    return s != null && s.adminId == _adminId;
+  }
 
   // ---------------------------------------------------------------------------
   // Setup phase
@@ -201,15 +218,12 @@ class AdminController extends GetxController {
     unawaited(_clockController.sync());
     _watchRecordingsFor(s.sessionId);
     _clockController.startWatchingCommands(s.sessionId);
-    // Detect cameras joining via code (fires immediately with existing peers).
     _watchPeerList(s.sessionId);
 
     session.value = s.copyWith(status: SessionStatus.live);
     isStarting.value = false;
   }
 
-  /// Adds a new camera slot and immediately initiates the WebRTC connection.
-  /// Can be called while the session is already live.
   Future<void> connectNewSlot() async {
     final s = session.value;
     if (s == null || slots.length >= _maxSlots) return;
@@ -223,7 +237,7 @@ class AdminController extends GetxController {
 
   Future<void> issueStartRecording() async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
 
     const bufferMs = 3000;
     _recordingStartedAt =
@@ -231,13 +245,12 @@ class AdminController extends GetxController {
     _recordingStoppedAt = null;
     switchHistory.clear();
     _cameraRecordingStartAt.clear();
+    _autoMergeStarted = false;
 
-    // Reset persisted timeline for this new recording.
     unawaited(_sessionRepository.initTimeline(s.sessionId).catchError(
           (Object e) => dev.log('initTimeline failed: $e', name: 'AdminController'),
         ));
 
-    // All currently-connected cameras start at the same global origin.
     for (final slot in slots) {
       _cameraRecordingStartAt[slot.peerId] = _recordingStartedAt!;
     }
@@ -265,10 +278,15 @@ class AdminController extends GetxController {
       }
     }
 
+    final profile = selectedProfile.value;
+    final payload = <String, dynamic>{
+      if (isStudioMode.value) 'studioMode': true,
+      if (profile != null) ...profile.toMap(),
+    };
     await _clockController.issueCommand(
       s.sessionId,
       CommandType.startRecording,
-      payload: isStudioMode.value ? {'studioMode': true} : null,
+      payload: payload.isEmpty ? null : payload,
     );
     isRecording.value = true;
     recordingSeconds.value = 0;
@@ -279,9 +297,8 @@ class AdminController extends GetxController {
 
   Future<void> issueStopRecording() async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
 
-    // Recording stops 1 second after command issue (bufferMs = 1000).
     _recordingStoppedAt =
         DateTime.now().add(const Duration(milliseconds: 1000));
 
@@ -302,22 +319,18 @@ class AdminController extends GetxController {
     _recordingTimer = null;
     recordingSeconds.value = 0;
 
-    // Arm auto-download: files arrive asynchronously via Firestore; the
-    // recordings watcher will trigger downloads as each entry lands.
+    // Arm auto-download: files arrive via Firestore → trigger downloads
     _autoDownloadEnabled = true;
     autoDownloading.value = true;
     downloadFailed.clear();
+    downloadedPaths.clear();
   }
 
-  /// Downloads a camera recording file from the camera device over LAN HTTP.
   Future<void> downloadRecording(RecordingInfo info) async {
     if (downloadProgress.containsKey(info.filename)) return;
     downloadProgress[info.filename] = 0.0;
 
-    dev.log(
-      'downloadRecording: GET ${info.downloadUrl}',
-      name: 'AdminController',
-    );
+    dev.log('downloadRecording: GET ${info.downloadUrl}', name: 'AdminController');
 
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
@@ -327,16 +340,12 @@ class AdminController extends GetxController {
       final request = await client.getUrl(Uri.parse(info.downloadUrl));
       final response = await request.close();
 
-      dev.log(
-        'downloadRecording: HTTP ${response.statusCode}  Content-Length=${response.contentLength}',
-        name: 'AdminController',
-      );
+      dev.log('downloadRecording: HTTP ${response.statusCode}  Content-Length=${response.contentLength}',
+          name: 'AdminController');
 
       if (response.statusCode != HttpStatus.ok) {
-        throw HttpException(
-          'Camera returned HTTP ${response.statusCode}',
-          uri: Uri.parse(info.downloadUrl),
-        );
+        throw HttpException('Camera returned HTTP ${response.statusCode}',
+            uri: Uri.parse(info.downloadUrl));
       }
       final total = response.contentLength;
       var received = 0;
@@ -350,21 +359,13 @@ class AdminController extends GetxController {
       } finally {
         await sink.close();
       }
-      dev.log(
-        'downloadRecording: saved $received bytes → $savePath',
-        name: 'AdminController',
-      );
+
+      dev.log('downloadRecording: saved $received bytes → $savePath', name: 'AdminController');
       final savedSize = await File(savePath).length();
       if (savedSize == 0) {
-        dev.log(
-          'downloadRecording: WARNING — file is 0 bytes after save: $savePath',
-          name: 'AdminController',
-        );
+        dev.log('downloadRecording: WARNING — file is 0 bytes: $savePath', name: 'AdminController');
       } else {
-        dev.log(
-          'downloadRecording: file OK — sizeBytes=$savedSize path=$savePath',
-          name: 'AdminController',
-        );
+        dev.log('downloadRecording: file OK — sizeBytes=$savedSize path=$savePath', name: 'AdminController');
       }
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
@@ -375,20 +376,13 @@ class AdminController extends GetxController {
       downloadProgress.remove(info.filename);
       if (_autoDownloadEnabled) downloadFailed[info.filename] = info;
       _maybeFinishAutoDownload();
-      Get.snackbar(
-        'Download Failed',
-        e.toString(),
-        snackPosition: SnackPosition.BOTTOM,
-      );
     } finally {
       client.close();
     }
   }
 
-  /// Switches the admin program view to a different camera.
-  /// Records a timeline event when recording is active so the render engine
-  /// knows the exact cut point.
   void switchActiveCamera(String peerId) {
+    if (!_isValidSession()) return;
     if (isRecording.value && activePeerId.value != peerId) {
       final event = SwitchEvent(timestamp: DateTime.now(), peerId: peerId);
       switchHistory.add(event);
@@ -404,12 +398,12 @@ class AdminController extends GetxController {
   }
 
   // ---------------------------------------------------------------------------
-  // Per-camera controls (mute / zoom / pause)
+  // Per-camera controls
   // ---------------------------------------------------------------------------
 
   Future<void> toggleMuteCamera(String peerId) async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
     final nowMuted = mutedCameras[peerId] ?? false;
     mutedCameras[peerId] = !nowMuted;
     await _clockController.issueCommand(
@@ -422,7 +416,7 @@ class AdminController extends GetxController {
 
   Future<void> togglePauseCamera(String peerId) async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
     final nowPaused = pausedCameras[peerId] ?? false;
     pausedCameras[peerId] = !nowPaused;
     await _clockController.issueCommand(
@@ -435,7 +429,7 @@ class AdminController extends GetxController {
 
   Future<void> promoteToCoAdmin(String peerId) async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
     coAdminPeerIds.add(peerId);
     final slotLabels = slots
         .map((slot) => {
@@ -454,7 +448,7 @@ class AdminController extends GetxController {
 
   Future<void> revokeCoAdmin(String peerId) async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
     coAdminPeerIds.remove(peerId);
     await _clockController.issueCommand(
       s.sessionId,
@@ -466,7 +460,7 @@ class AdminController extends GetxController {
 
   Future<void> adjustZoom(String peerId, double delta) async {
     final s = session.value;
-    if (s == null) return;
+    if (s == null || !_isValidSession()) return;
     final current = zoomLevels[peerId] ?? 1.0;
     final newLevel = (current + delta).clamp(1.0, 8.0);
     zoomLevels[peerId] = newLevel;
@@ -480,134 +474,148 @@ class AdminController extends GetxController {
   }
 
   // ---------------------------------------------------------------------------
-  // Timeline builder — called from TransferSheet before navigating to render
+  // Timeline builder — called before navigating to render
   // ---------------------------------------------------------------------------
 
   List<Map<String, dynamic>> buildRenderSegments() {
     final startedAt = _recordingStartedAt;
     final stoppedAt = _recordingStoppedAt;
 
-    dev.log(
-      'buildRenderSegments: startedAt=$startedAt stoppedAt=$stoppedAt '
-      'switchHistory=${switchHistory.length} recordings=${recordings.length} '
-      'downloaded=${downloadedPaths.length}',
-      name: 'AdminController',
-    );
+    dev.log('buildRenderSegments: startedAt=$startedAt stoppedAt=$stoppedAt '
+        'switchHistory=${switchHistory.length} recordings=${recordings.length} '
+        'downloaded=${downloadedPaths.length}', name: 'AdminController');
 
     if (startedAt == null || stoppedAt == null || switchHistory.isEmpty) {
-      dev.log(
-        'buildRenderSegments: returning [] — '
-        'startedAt=${startedAt != null} stoppedAt=${stoppedAt != null} '
-        'switchHistory=${switchHistory.length}',
-        name: 'AdminController',
-      );
+      dev.log('buildRenderSegments: returning []', name: 'AdminController');
       return [];
     }
 
-    // Build peerId → local path map from downloaded recordings.
     final peerToPath = <String, String>{};
     for (final info in recordings) {
       final path = downloadedPaths[info.filename];
       if (path != null) {
         peerToPath[info.peerId] = path;
-        dev.log(
-          'buildRenderSegments: peerId=${info.peerId.substring(0, 8)} → ${info.filename}',
-          name: 'AdminController',
-        );
-      } else {
-        dev.log(
-          'buildRenderSegments: peerId=${info.peerId.substring(0, 8)} — '
-          'no downloaded path for ${info.filename} (skipped)',
-          name: 'AdminController',
-        );
       }
     }
 
     final events = List<SwitchEvent>.from(switchHistory);
-    final totalMs =
-        stoppedAt.difference(startedAt).inMilliseconds.clamp(0, 999999);
-
-    dev.log(
-      'buildRenderSegments: totalDurationMs=$totalMs  events=${events.length}',
-      name: 'AdminController',
-    );
-    for (var i = 0; i < events.length; i++) {
-      final offsetMs = events[i].timestamp.difference(startedAt).inMilliseconds;
-      dev.log(
-        'buildRenderSegments: event[$i] peerId=${events[i].peerId.substring(0, 8)} '
-        'offsetMs=$offsetMs',
-        name: 'AdminController',
-      );
-    }
-
+    final totalMs = stoppedAt.difference(startedAt).inMilliseconds.clamp(0, 999999);
     final segments = <Map<String, dynamic>>[];
 
     for (var i = 0; i < events.length; i++) {
       final peerId = events[i].peerId;
-      final segStartMs = events[i]
-          .timestamp
-          .difference(startedAt)
-          .inMilliseconds
-          .clamp(0, totalMs);
+      final segStartMs = events[i].timestamp.difference(startedAt).inMilliseconds.clamp(0, totalMs);
       final segEndMs = i + 1 < events.length
-          ? events[i + 1]
-              .timestamp
-              .difference(startedAt)
-              .inMilliseconds
-              .clamp(0, totalMs)
+          ? events[i + 1].timestamp.difference(startedAt).inMilliseconds.clamp(0, totalMs)
           : totalMs;
 
       final path = peerToPath[peerId];
-      if (path == null) {
-        dev.log(
-          'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} — '
-          'no downloaded file, skipping',
-          name: 'AdminController',
-        );
-        continue;
-      }
+      if (path == null) continue;
 
-      // Late-joining cameras start recording after the global session origin.
       final cameraStartedAt = _cameraRecordingStartAt[peerId] ?? startedAt;
-      final joinOffsetMs =
-          cameraStartedAt.difference(startedAt).inMilliseconds.clamp(0, totalMs);
-
+      final joinOffsetMs = cameraStartedAt.difference(startedAt).inMilliseconds.clamp(0, totalMs);
       final effectiveStartMs = segStartMs.clamp(joinOffsetMs, totalMs);
       final effectiveEndMs = segEndMs.clamp(joinOffsetMs, totalMs);
       final fileDurationMs = effectiveEndMs - effectiveStartMs;
 
-      if (fileDurationMs <= 0) {
-        dev.log(
-          'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} — '
-          'fileDurationMs=$fileDurationMs ≤ 0, skipping '
-          '(segStartMs=$segStartMs segEndMs=$segEndMs joinOffsetMs=$joinOffsetMs)',
-          name: 'AdminController',
-        );
-        continue;
-      }
+      if (fileDurationMs <= 0) continue;
 
       final fileStartMs = effectiveStartMs - joinOffsetMs;
-      final seg = {
+      segments.add({
         'inputPath': path,
         'startMs': fileStartMs,
         'durationMs': fileDurationMs,
         'adminAudioStartMs': effectiveStartMs,
-      };
-      segments.add(seg);
-      dev.log(
-        'buildRenderSegments: segment[$i] peerId=${peerId.substring(0, 8)} '
-        'file=${path.split('/').last} '
-        'startMs=$fileStartMs durationMs=$fileDurationMs '
-        'adminAudioStartMs=$effectiveStartMs',
-        name: 'AdminController',
-      );
+      });
     }
 
-    dev.log(
-      'buildRenderSegments: produced ${segments.length} segment(s)',
-      name: 'AdminController',
-    );
+    dev.log('buildRenderSegments: produced ${segments.length} segment(s)', name: 'AdminController');
     return segments;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-download + Auto-merge
+  // ---------------------------------------------------------------------------
+
+  void _checkAutoDownload(List<RecordingInfo> list) {
+    for (final info in list) {
+      if (!downloadedPaths.containsKey(info.filename) &&
+          !downloadProgress.containsKey(info.filename) &&
+          !downloadFailed.containsKey(info.filename)) {
+        unawaited(downloadRecording(info));
+      }
+    }
+    _maybeFinishAutoDownload();
+  }
+
+  void _maybeFinishAutoDownload() {
+    if (!_autoDownloadEnabled) return;
+    if (recordings.isEmpty) return;
+    final allSettled = recordings.every(
+      (r) => downloadedPaths.containsKey(r.filename) || downloadFailed.containsKey(r.filename),
+    );
+    if (allSettled) {
+      _autoDownloadEnabled = false;
+      autoDownloading.value = false;
+      // Only auto-merge if ALL downloads succeeded — if any failed, the user
+      // must retry them manually before merging.
+      final hasFailures = downloadFailed.isNotEmpty;
+      if (!hasFailures && !_autoMergeStarted) {
+        _autoMergeStarted = true;
+        unawaited(_autoMerge());
+      } else if (hasFailures) {
+        Get.snackbar(
+          'Download Incomplete',
+          'Some recordings failed to download. Retry them before rendering.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 4),
+        );
+      }
+    }
+  }
+
+  /// Auto-merges downloaded recordings into a single video based on switch timeline.
+  Future<void> _autoMerge() async {
+    if (downloadedPaths.isEmpty) {
+      dev.log('_autoMerge: no downloaded files to merge', name: 'AdminController');
+      return;
+    }
+    if (switchHistory.isEmpty) {
+      dev.log('_autoMerge: no switch history, cannot build timeline', name: 'AdminController');
+      return;
+    }
+
+    dev.log('_autoMerge: merging ${downloadedPaths.length} file(s) with ${switchHistory.length} switch(es)',
+        name: 'AdminController');
+
+    // Build RenderSource list from downloaded paths
+    final sources = <RenderSource>[];
+    for (final entry in downloadedPaths.entries) {
+      final filename = entry.key;
+      final path = entry.value;
+      final info = recordings.firstWhereOrNull((r) => r.filename == filename);
+      final slot = info != null
+          ? slots.firstWhereOrNull((s) => s.peerId == info.peerId)
+          : null;
+      final label = slot?.deviceName ?? slot?.label ?? filename;
+      sources.add(RenderSource(filename: filename, label: label, path: path));
+    }
+
+    // Build timeline segments
+    final segments = buildRenderSegments();
+    if (segments.isEmpty) {
+      dev.log('_autoMerge: segments empty, skipping render', name: 'AdminController');
+      return;
+    }
+
+    // Trigger render via RenderService and navigate to the render page so the
+    // user can see progress. The RenderService is a GetxService that lives for
+    // the app lifetime, so the render continues even if the user navigates away.
+    final renderService = Get.find<RenderService>();
+    renderService.prepare(sources, segments: segments, adminAudioPath: _adminAudioPath);
+    Get.toNamed<void>('/admin/render');
+    await renderService.startRender();
+    dev.log('_autoMerge: render completed', name: 'AdminController');
   }
 
   // ---------------------------------------------------------------------------
@@ -621,10 +629,7 @@ class AdminController extends GetxController {
     if (isRecording.value) await issueStopRecording();
 
     await Future.wait(
-      slots.map(
-        (slot) =>
-            _signalingController.disconnect(s.sessionId, slot.peerId),
-      ),
+      slots.map((slot) => _signalingController.disconnect(s.sessionId, slot.peerId)),
     );
 
     await _endSession(EndSessionParams(sessionId: s.sessionId));
@@ -649,6 +654,7 @@ class AdminController extends GetxController {
     downloadFailed.clear();
     autoDownloading.value = false;
     _autoDownloadEnabled = false;
+    _autoMergeStarted = false;
     mutedCameras.clear();
     zoomLevels.clear();
     pausedCameras.clear();
@@ -668,6 +674,9 @@ class AdminController extends GetxController {
     isRecording.value = false;
     isStudioMode.value = false;
     _adminAudioPath = null;
+    cameraCapabilities.clear();
+    compatibleProfiles.clear();
+    selectedProfile.value = null;
     _clockController.stopWatchingCommands();
     unawaited(_clearSessionFromDisk());
   }
@@ -691,8 +700,7 @@ class AdminController extends GetxController {
     }
   }
 
-  String _generateSessionCode() =>
-      (100000 + _random.nextInt(900000)).toString();
+  String _generateSessionCode() => (100000 + _random.nextInt(900000)).toString();
 
   // ---------------------------------------------------------------------------
   // Internal handlers
@@ -703,14 +711,7 @@ class AdminController extends GetxController {
     final stream = event.stream;
     final isNewPeer = !renderers.containsKey(peerId);
 
-    // Determine target audio state:
-    //  - New peer → off by default. Playing camera audio immediately through the
-    //    Admin speaker causes acoustic feedback when Admin and camera are in the
-    //    same room; require the admin to enable monitoring deliberately.
-    //  - Stream replacement for existing peer → preserve admin's current choice.
-    final shouldEnable = isNewPeer
-        ? false
-        : (liveAudioEnabled[peerId] ?? false);
+    final shouldEnable = isNewPeer ? false : (liveAudioEnabled[peerId] ?? false);
 
     liveAudioEnabled[peerId] = shouldEnable;
     _remoteStreams[peerId] = stream;
@@ -729,9 +730,6 @@ class AdminController extends GetxController {
     if (activePeerId.value == null) activePeerId.value = peerId;
   }
 
-  /// Toggles live audio monitoring for [peerId] on the Admin device only.
-  /// Flips the track.enabled flag on the incoming WebRTC audio track — no
-  /// command is sent to the camera device and recording is unaffected.
   void toggleLiveAudio(String peerId) {
     final nowEnabled = liveAudioEnabled[peerId] ?? false;
     liveAudioEnabled[peerId] = !nowEnabled;
@@ -748,7 +746,6 @@ class AdminController extends GetxController {
     for (var i = 0; i < slots.length; i++) {
       final peerState = peers[slots[i].peerId];
       if (peerState != null && peerState.status != slots[i].connectionStatus) {
-        // Camera connected mid-recording → issue targeted startRecording.
         if (isRecording.value &&
             peerState.status == PeerStatus.connected &&
             slots[i].connectionStatus != PeerStatus.connected &&
@@ -760,18 +757,21 @@ class AdminController extends GetxController {
     }
   }
 
-  Future<void> _autoStartRecordingForPeer(
-    String peerId,
-    String sessionId,
-  ) async {
+  Future<void> _autoStartRecordingForPeer(String peerId, String sessionId) async {
+    if (!_isValidSession()) return;
     const bufferMs = 1000;
-    _cameraRecordingStartAt[peerId] =
-        DateTime.now().add(const Duration(milliseconds: bufferMs));
+    _cameraRecordingStartAt[peerId] = DateTime.now().add(const Duration(milliseconds: bufferMs));
+    final profile = selectedProfile.value;
+    final payload = <String, dynamic>{
+      if (isStudioMode.value) 'studioMode': true,
+      if (profile != null) ...profile.toMap(),
+    };
     await _clockController.issueCommand(
       sessionId,
       CommandType.startRecording,
       bufferMs: bufferMs,
       targetPeerId: peerId,
+      payload: payload.isEmpty ? null : payload,
     );
   }
 
@@ -801,34 +801,6 @@ class AdminController extends GetxController {
     });
   }
 
-  void _checkAutoDownload(List<RecordingInfo> list) {
-    for (final info in list) {
-      if (!downloadedPaths.containsKey(info.filename) &&
-          !downloadProgress.containsKey(info.filename) &&
-          !downloadFailed.containsKey(info.filename)) {
-        unawaited(downloadRecording(info));
-      }
-    }
-    _maybeFinishAutoDownload();
-  }
-
-  void _maybeFinishAutoDownload() {
-    if (!_autoDownloadEnabled) return;
-    if (recordings.isEmpty) return;
-    final allSettled = recordings.every(
-      (r) =>
-          downloadedPaths.containsKey(r.filename) ||
-          downloadFailed.containsKey(r.filename),
-    );
-    if (allSettled) {
-      _autoDownloadEnabled = false;
-      autoDownloading.value = false;
-    }
-  }
-
-  /// Watches the peer collection for cameras joining via code.
-  /// Fires immediately with existing peers when the subscription is created,
-  /// so cameras that joined before Go Live are connected automatically.
   void _watchPeerList(String sessionId) {
     _peerListSub?.cancel();
     _peerListSub = _watchPeers(sessionId).listen((peers) {
@@ -840,17 +812,53 @@ class AdminController extends GetxController {
           final label = peer.deviceName ?? 'Camera ${slots.length + 1}';
           final slot = CameraSlot(peerId: peer.peerId, label: label);
           slots.add(slot);
-          unawaited(
-            _signalingController.connectToCamera(s.sessionId, peer.peerId, label),
-          );
+          unawaited(_signalingController.connectToCamera(s.sessionId, peer.peerId, label));
           _watchDeviceNameFor(s.sessionId, peer.peerId);
           if (isRecording.value) {
             unawaited(_autoStartRecordingForPeer(peer.peerId, s.sessionId));
           }
         }
+        if (peer.capabilities.isNotEmpty) {
+          cameraCapabilities[peer.peerId] = peer.capabilities;
+        }
       }
+      _computeCompatibleProfiles();
     });
   }
+
+  void _computeCompatibleProfiles() {
+    final activePeerIds = slots.map((s) => s.peerId).toList();
+    final knownCaps = activePeerIds
+        .where((id) => cameraCapabilities.containsKey(id))
+        .map((id) => cameraCapabilities[id]!.toSet())
+        .toList();
+
+    if (knownCaps.isEmpty) {
+      if (compatibleProfiles.isEmpty) {
+        compatibleProfiles.assignAll([_defaultProfile]);
+        selectedProfile.value ??= _defaultProfile;
+      }
+      return;
+    }
+
+    final first = knownCaps.first;
+    final intersection = knownCaps.skip(1).fold<Set<RecordingProfile>>(
+          first,
+          (acc, caps) => acc.intersection(caps),
+        );
+
+    final sorted = intersection.toList()
+      ..sort((a, b) => b.quality.compareTo(a.quality));
+
+    compatibleProfiles.assignAll(sorted);
+
+    if (selectedProfile.value == null || !sorted.contains(selectedProfile.value)) {
+      selectedProfile.value = sorted.isNotEmpty ? sorted.first : _defaultProfile;
+    }
+  }
+
+  static const _defaultProfile =
+      RecordingProfile(width: 1280, height: 720, frameRate: 30, codec: 'H264');
 
   // ---------------------------------------------------------------------------
   // Timeline disk persistence — crash recovery helpers
@@ -866,9 +874,7 @@ class AdminController extends GetxController {
   Future<void> _saveSessionToDisk(String sessionId, String adminId) async {
     try {
       final file = await _sessionFile();
-      await file.writeAsString(
-        jsonEncode({'sessionId': sessionId, 'adminId': adminId}),
-      );
+      await file.writeAsString(jsonEncode({'sessionId': sessionId, 'adminId': adminId}));
     } catch (e) {
       dev.log('_saveSessionToDisk failed: $e', name: 'AdminController');
     }
@@ -896,7 +902,6 @@ class AdminController extends GetxController {
       final events = await _sessionRepository.fetchTimeline(sessionId);
       if (events.isEmpty) return;
 
-      // Restore in-memory state from Firestore.
       session.value = Session(
         sessionId: sessionId,
         adminId: adminId,
@@ -905,11 +910,11 @@ class AdminController extends GetxController {
       _adminId = adminId;
       switchHistory.assignAll(events);
       _recordingStartedAt = events.first.timestamp;
+      // Restore the stop time so buildRenderSegments can produce a valid
+      // timeline after crash recovery. Without this, segments are always empty.
+      _recordingStoppedAt = DateTime.now();
 
-      dev.log(
-        'Recovered session $sessionId with ${events.length} timeline events',
-        name: 'AdminController',
-      );
+      dev.log('Recovered session $sessionId with ${events.length} timeline events', name: 'AdminController');
     } catch (e) {
       dev.log('_tryRecoverFromDisk failed: $e', name: 'AdminController');
     }

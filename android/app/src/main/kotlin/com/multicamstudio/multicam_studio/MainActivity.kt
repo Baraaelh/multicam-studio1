@@ -2,6 +2,9 @@ package com.multicamstudio.multicam_studio
 
 import android.content.ContentValues
 import android.content.Intent
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -73,10 +76,22 @@ class MainActivity : FlutterActivity() {
                             }.start()
                         }
                     }
+                    "getRecordingCapabilities" -> {
+                        try {
+                            result.success(buildRecordingCapabilities())
+                        } catch (e: Exception) {
+                            Log.e(tag, "getRecordingCapabilities failed: ${e.message}", e)
+                            result.error("CAPABILITIES_ERROR", e.message, null)
+                        }
+                    }
                     "startRecording" -> {
                         val trackId = call.argument<String>("trackId")
                         val outputPath = call.argument<String>("outputPath")
                         val recordAudio = call.argument<Boolean>("recordAudio") ?: true
+                        val width = call.argument<Int>("width") ?: 1280
+                        val height = call.argument<Int>("height") ?: 720
+                        val frameRate = call.argument<Int>("frameRate") ?: 30
+                        val bitRate = call.argument<Int>("bitRate") ?: 3_000_000
                         if (trackId == null || outputPath == null) {
                             result.error("INVALID_ARGS", "Missing trackId or outputPath", null)
                             return@setMethodCallHandler
@@ -98,13 +113,18 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         try {
-                            val recorder = I420VideoRecorder(outputPath)
+                            Log.i(tag, "DIAG startRecording thread=${Thread.currentThread().name} ts=${System.currentTimeMillis()}")
+                            val recorder = I420VideoRecorder(outputPath, width, height, frameRate, bitRate)
+                            val tStart = System.nanoTime()
                             recorder.start(recordAudio)
+                            Log.i(tag, "DIAG recorder.start() returned: ${(System.nanoTime() - tStart) / 1_000_000L}ms")
+                            val tSink = System.nanoTime()
                             videoTrack.addSink(recorder)
+                            Log.i(tag, "DIAG addSink() done: ${(System.nanoTime() - tSink) / 1_000_000L}ms")
                             currentRecorder = recorder
                             currentRecorderTrack = videoTrack
                             currentOutputPath = outputPath
-                            Log.d(tag, "startRecording OK recordAudio=$recordAudio → $outputPath")
+                            Log.d(tag, "startRecording OK ${width}×${height}@${frameRate}fps ${bitRate}bps recordAudio=$recordAudio → $outputPath")
                             result.success(null)
                         } catch (e: Exception) {
                             Log.e(tag, "startRecording failed: ${e.message}", e)
@@ -181,6 +201,74 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /**
+     * Queries the back-facing camera via Camera2 to discover which (resolution, fps)
+     * combinations are actually supported for H264 video capture.
+     *
+     * Uses SurfaceTexture output sizes (which WebRTC uses for camera capture) and
+     * AE fixed fps ranges to determine genuine recording profiles.
+     */
+    private fun buildRecordingCapabilities(): List<Map<String, Any>> {
+        val profiles = mutableListOf<Map<String, Any>>()
+        try {
+            val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+
+            // Standard resolutions to probe, ordered highest-to-lowest quality.
+            // 720p is the practical floor; anything below is not useful for broadcast.
+            val targetSizes = listOf(3840 to 2160, 1920 to 1080, 1280 to 720)
+            // Only probe 30fps: the WebRTC getUserMedia pipeline is capped at 30fps,
+            // so higher values would not reflect achievable recording frame rates.
+            val targetFps = listOf(30)
+
+            val seen = mutableSetOf<Triple<Int, Int, Int>>()
+
+            for (id in cameraManager.cameraIdList) {
+                val chars = cameraManager.getCameraCharacteristics(id)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+
+                val streamMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    ?: break
+
+                // SurfaceTexture sizes match what WebRTC's camera source can open
+                val supportedSizes = streamMap
+                    .getOutputSizes(SurfaceTexture::class.java)
+                    ?.map { it.width to it.height }
+                    ?.toSet() ?: emptySet()
+
+                // Fixed fps ranges: lower == upper means the camera guarantees that exact rate
+                val aeRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    ?: break
+                val supportedFixedFps = aeRanges
+                    .filter { it.lower == it.upper }
+                    .map { it.upper }
+                    .toSet()
+
+                for ((w, h) in targetSizes) {
+                    if ((w to h) !in supportedSizes) continue
+                    for (fps in targetFps) {
+                        if (fps !in supportedFixedFps) continue
+                        val key = Triple(w, h, fps)
+                        if (seen.add(key)) {
+                            profiles.add(mapOf("width" to w, "height" to h, "frameRate" to fps, "codec" to "H264"))
+                        }
+                    }
+                }
+                break // Only use the first back-facing camera
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "buildRecordingCapabilities: ${e.message}", e)
+        }
+
+        // Always guarantee at least 720p30 as a safe minimum
+        if (profiles.none { it["height"] == 720 && it["frameRate"] == 30 }) {
+            profiles.add(mapOf("width" to 1280, "height" to 720, "frameRate" to 30, "codec" to "H264"))
+        }
+
+        Log.d(tag, "buildRecordingCapabilities: ${profiles.size} profile(s) discovered")
+        return profiles
     }
 
     /**

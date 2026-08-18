@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "91103848718",
+    "project_id": "multicam-studio",
+    "storage_bucket": "multicam-studio.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:91103848718:android:85223c493f145713f08f5f",
+        "android_client_info": {
+          "package_name": "com.multicamstudio.multicam_studio"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC1L-KtJFhML_nY-zu2ExU5nl5HeMXzG8o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

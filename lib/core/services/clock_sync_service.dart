@@ -31,20 +31,33 @@ class ClockSyncService {
 
   /// Measures clock offset. Writes [rounds] server-timestamp documents,
   /// reads each back, computes RTT-corrected offsets, and stores the median.
-  Future<void> measure({int rounds = 5}) async {
+  ///
+  /// Uses 3 rounds by default (down from 5) to reduce Firestore round-trips
+  /// and improve startup latency. The median of 3 samples is still robust
+  /// against outliers.
+  Future<void> measure({int rounds = 3}) async {
     final offsets = <int>[];
     final col = _firestore.collection('_clock_probes');
     for (var i = 0; i < rounds; i++) {
-      final t1 = DateTime.now().millisecondsSinceEpoch;
-      final ref = col.doc();
-      await ref.set({'t': FieldValue.serverTimestamp()});
-      final snap = await ref.get();
-      final t2 = DateTime.now().millisecondsSinceEpoch;
-      ref.delete().ignore(); // fire-and-forget cleanup
-      final serverMs =
-          (snap.data()!['t'] as Timestamp).millisecondsSinceEpoch;
-      final localMid = t1 + (t2 - t1) ~/ 2;
-      offsets.add(localMid - serverMs);
+      try {
+        final t1 = DateTime.now().millisecondsSinceEpoch;
+        final ref = col.doc();
+        await ref.set({'t': FieldValue.serverTimestamp()});
+        final snap = await ref.get();
+        final t2 = DateTime.now().millisecondsSinceEpoch;
+        ref.delete().ignore(); // fire-and-forget cleanup
+        final serverMs =
+            (snap.data()!['t'] as Timestamp).millisecondsSinceEpoch;
+        final localMid = t1 + (t2 - t1) ~/ 2;
+        offsets.add(localMid - serverMs);
+      } catch (_) {
+        // Skip failed probes — a single failure shouldn't abort the whole sync.
+        continue;
+      }
+    }
+    if (offsets.isEmpty) {
+      // No successful probes — keep previous state.
+      return;
     }
     offsets.sort();
     _offsetMs = offsets[offsets.length ~/ 2];

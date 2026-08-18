@@ -8,7 +8,7 @@ import 'core/services/ffmpeg_service.dart';
 import 'features/admin/presentation/services/render_service.dart';
 import 'firebase_options.dart';
 
-Future<void> main() async {
+Future<void> main() async {     
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(

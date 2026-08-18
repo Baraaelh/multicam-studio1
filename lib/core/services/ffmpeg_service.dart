@@ -25,8 +25,8 @@ class FfmpegService {
       await _channel.invokeMethod<void>('renderVideos', {
         'inputs': inputPaths,
         'output': outputPath,
-        if (segments != null && segments.isNotEmpty) 'segments': segments,
-        if (adminAudioPath != null) 'adminAudioPath': adminAudioPath,
+        'segments': (segments != null && segments.isNotEmpty) ? segments : null,
+        'adminAudioPath': adminAudioPath,
       });
       onProgress?.call(1.0);
       onComplete?.call(outputPath);
@@ -50,5 +50,13 @@ class FfmpegService {
 
   Future<void> cancel() async {
     // Native MediaMuxer runs synchronously — cannot be cancelled mid-flight.
+    // We still notify the native side so it can clean up any partial output
+    // file and release resources. The native implementation should handle
+    // this gracefully if a render is in progress.
+    try {
+      await _channel.invokeMethod<void>('cancelRender');
+    } catch (_) {
+      // Best-effort: if the native side doesn't support cancellation, ignore.
+    }
   }
 }

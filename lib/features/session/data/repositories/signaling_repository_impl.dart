@@ -1,4 +1,5 @@
 import '../../domain/entities/ice_candidate_entity.dart';
+import '../../domain/entities/recording_profile.dart';
 import '../../domain/entities/sdp_info.dart';
 import '../../domain/repositories/signaling_repository.dart';
 import '../datasources/signaling_remote_datasource.dart';
@@ -96,8 +97,9 @@ class SignalingRepositoryImpl implements SignalingRepository {
     String sessionId,
     String peerId,
     String deviceName,
+    List<Map<String, dynamic>> capabilities,
   ) =>
-      _dataSource.registerDevice(sessionId, peerId, deviceName);
+      _dataSource.registerDevice(sessionId, peerId, deviceName, capabilities);
 
   @override
   Stream<String?> watchDeviceName(String sessionId, String peerId) =>
@@ -108,7 +110,7 @@ class SignalingRepositoryImpl implements SignalingRepository {
       _dataSource.lookupSessionCode(code);
 
   @override
-  Stream<List<({String peerId, String? deviceName})>> watchPeers(
+  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(
     String sessionId,
   ) =>
       _dataSource.watchPeers(sessionId);

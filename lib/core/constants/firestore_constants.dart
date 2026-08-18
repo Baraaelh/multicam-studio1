@@ -42,6 +42,9 @@ abstract final class FirestoreConstants {
   static const String sizeBytes = 'sizeBytes';
   static const String recordedAt = 'recordedAt';
 
+  // Recording capabilities field on peer document
+  static const String capabilities = 'capabilities';
+
   // Timeline subcollection + fields
   static const String timeline = 'timeline';
   static const String timelineTimestamp = 'timestamp';

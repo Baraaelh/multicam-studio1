@@ -5,10 +5,12 @@ import 'features/admin/presentation/bindings/admin_binding.dart';
 import 'features/admin/presentation/pages/admin_live_page.dart';
 import 'features/admin/presentation/pages/admin_setup_page.dart';
 import 'features/admin/presentation/pages/render_page.dart';
+import 'features/border/presentation/pages/border_page.dart';
 import 'features/camera/presentation/bindings/camera_binding.dart';
 import 'features/camera/presentation/pages/camera_page.dart';
 import 'features/camera/presentation/pages/qr_scan_page.dart' show CodeJoinPage;
-import 'features/session/presentation/bindings/signaling_binding.dart';
+import 'features/policy/presentation/pages/policy_page.dart';
+import 'features/splash/presentation/pages/splash_page.dart';
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -19,10 +21,9 @@ class App extends StatelessWidget {
       title: 'Multicam Studio',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true),
-      initialBinding: SignalingBinding(),
-      initialRoute: '/',
+      initialRoute: '/splash',
       getPages: [
-        GetPage(name: '/', page: () => const _ModeSelectPage()),
+        GetPage(name: '/splash', page: () => const SplashPage()),
         GetPage(
           name: '/camera/scan',
           page: () => const CodeJoinPage(),
@@ -39,6 +40,8 @@ class App extends StatelessWidget {
           name: '/admin/render',
           page: () => const RenderPage(),
         ),
+        GetPage(name: '/border', page: () => const BorderPage()),
+        GetPage(name: '/policy', page: () => const PolicyPage()),
       ],
     );
   }

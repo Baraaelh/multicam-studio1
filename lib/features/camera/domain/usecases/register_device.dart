@@ -24,10 +24,12 @@ class RegisterDevice implements UseCase<void, RegisterDeviceParams> {
   Future<Result<void>> call(RegisterDeviceParams params) async {
     try {
       final deviceName = await _cameraDataSource.getDeviceName();
+      final capabilities = await _cameraDataSource.getRecordingCapabilities();
       await _signalingRepository.registerDevice(
         params.sessionId,
         params.peerId,
         deviceName,
+        capabilities,
       );
       return const Success(null);
     } catch (e) {

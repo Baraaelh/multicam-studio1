@@ -141,8 +141,20 @@ object VideoRenderService {
         adminAudioPath: String? = null,
     ) {
         require(segments.isNotEmpty()) { "No segments" }
+
+        // Guard: if the admin audio file is missing or empty (e.g. AudioRecord init
+        // failed silently), fall back to no studio audio rather than crashing.
+        val validAdminAudioPath: String? = adminAudioPath?.let { p ->
+            val f = java.io.File(p)
+            when {
+                !f.exists()     -> { Log.w(TAG, "admin audio missing — skipping studio audio: ${p.substringAfterLast('/')}"); null }
+                f.length() == 0L -> { Log.w(TAG, "admin audio is 0 bytes — skipping studio audio: ${p.substringAfterLast('/')}"); null }
+                else            -> p
+            }
+        }
+
         Log.d(TAG, "mergeWithTimeline: ${segments.size} segment(s) → $output" +
-                if (adminAudioPath != null) " [studio audio: ${adminAudioPath.substringAfterLast('/')}]" else "")
+                if (validAdminAudioPath != null) " [studio audio: ${validAdminAudioPath.substringAfterLast('/')}]" else "")
 
         // Diagnostic: log full metadata for every input file before touching the muxer.
         segments.forEach { seg ->
@@ -233,15 +245,15 @@ object VideoRenderService {
             probe.setDataSource(firstPath)
             videoFormat = findFormat(probe, "video/")
                 ?: throw IllegalStateException("No video track in $firstPath")
-            cameraAudioFormat = if (adminAudioPath == null) findFormat(probe, "audio/") else null
+            cameraAudioFormat = if (validAdminAudioPath == null) findFormat(probe, "audio/") else null
         } finally {
             probe.release()
         }
 
-        val audioFormat: MediaFormat? = if (adminAudioPath != null) {
+        val audioFormat: MediaFormat? = if (validAdminAudioPath != null) {
             val adminProbe = MediaExtractor()
             try {
-                adminProbe.setDataSource(adminAudioPath)
+                adminProbe.setDataSource(validAdminAudioPath)
                 findFormat(adminProbe, "audio/")
                     ?: run { Log.w(TAG, "admin audio file has no audio track — output will be silent"); null }
             } finally {
@@ -290,9 +302,9 @@ object VideoRenderService {
         var audioOutputOffsetUs = 0L
 
         // Studio Mode: open admin audio extractor once; reuse across all segments.
-        val adminAudioExt: MediaExtractor? = if (adminAudioPath != null && muxAudioTrack >= 0) {
+        val adminAudioExt: MediaExtractor? = if (validAdminAudioPath != null && muxAudioTrack >= 0) {
             val ext = MediaExtractor()
-            ext.setDataSource(adminAudioPath)
+            ext.setDataSource(validAdminAudioPath)
             val idx = findTrackIndex(ext, "audio/")
             if (idx >= 0) { ext.selectTrack(idx); ext } else { ext.release(); null }
         } else null

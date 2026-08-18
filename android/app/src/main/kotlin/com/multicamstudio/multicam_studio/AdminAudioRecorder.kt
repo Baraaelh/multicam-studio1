@@ -61,9 +61,8 @@ class AdminAudioRecorder(private val outputPath: String) {
             AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_CONFIG, AUDIO_FORMAT, bufSize,
         )
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord init failed")
             ar.release(); muxer?.release(); muxer = null
-            return
+            throw IOException("AudioRecord init failed — microphone may be in use by WebRTC")
         }
 
         val aenc = MediaCodec.createEncoderByType(AUDIO_MIME).also { enc ->

@@ -38,7 +38,31 @@ class CameraPage extends GetView<CameraController> {
                 ),
               ),
 
-            if (state.status != CameraStatus.active &&
+            if (state.status == CameraStatus.error)
+              Positioned.fill(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.error_outline,
+                            color: Colors.redAccent, size: 48),
+                        const SizedBox(height: 16),
+                        Text(
+                          state.errorMessage ?? 'Camera error',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else if (state.status != CameraStatus.active &&
                 state.status != CameraStatus.switchingLens)
               const Positioned.fill(
                 child: Center(child: CircularProgressIndicator()),
@@ -73,10 +97,11 @@ class CameraPage extends GetView<CameraController> {
 
             // Co-admin overlay — shown when this device has been promoted.
             // Positioned is a direct Stack child so layout is correct.
+            // Positioned above the sync badge to avoid overlap.
             Positioned(
               left: 0,
               right: 0,
-              bottom: MediaQuery.of(context).padding.bottom + 110,
+              bottom: MediaQuery.of(context).padding.bottom + 170,
               child: Obx(() {
                 if (!controller.isCoAdmin.value) return const SizedBox.shrink();
                 return _CoAdminOverlay(

@@ -9,6 +9,7 @@ import '../../../../core/error/result.dart';
 import '../../../../core/platform/camera_service_platform.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../../../session/domain/entities/recording_info.dart';
+import '../../../session/domain/entities/recording_profile.dart';
 import '../../../session/domain/entities/sync_command.dart';
 import '../../../session/domain/usecases/lookup_session_code.dart';
 import '../../../session/domain/usecases/publish_recording_info.dart';
@@ -23,6 +24,8 @@ import '../../domain/usecases/start_capture.dart';
 import '../../domain/usecases/stop_capture.dart';
 import '../../domain/usecases/switch_lens.dart';
 
+/// CameraController manages the local camera device.
+/// Records locally using the native MethodChannel (I420VideoRecorder).
 class CameraController extends GetxController {
   final StartCapture _startCapture;
   final StopCapture _stopCapture;
@@ -78,6 +81,7 @@ class CameraController extends GetxController {
   webrtc.MediaStream? _localStream;
   QrPayload? _payload;
   Worker? _commandWorker;
+  String? _expectedPin;
 
   @override
   Future<void> onInit() async {
@@ -91,15 +95,29 @@ class CameraController extends GetxController {
     final result = await _lookupSessionCode(code);
     if (result.isFailure) return Failure(result.failureOrNull!);
     final sessionId = result.valueOrNull!;
+    // Store the expected PIN for verification in startFromQr.
+    _expectedPin = code;
     return Success(QrPayload(
       sessionId: sessionId,
       peerId: const Uuid().v4(),
       adminId: '',
       label: 'Camera',
+      // The 6-digit code itself serves as the PIN for code-based join.
+      // This lets the camera display it for verification while the admin
+      // confirms the code matches the session.
+      pin: code,
     ));
   }
 
   Future<void> startFromQr(QrPayload payload) async {
+    // Verify PIN if provided — prevents joining with a mismatched code.
+    if (payload.pin.isNotEmpty && _expectedPin != null && payload.pin != _expectedPin) {
+      cameraState.value = LocalCameraState(
+        status: CameraStatus.error,
+        errorMessage: 'Invalid PIN. Please re-enter the session code.',
+      );
+      return;
+    }
     _payload = payload;
     slotLabel.value = payload.label;
     sessionPin.value = payload.pin.isNotEmpty ? payload.pin : null;
@@ -109,8 +127,6 @@ class CameraController extends GetxController {
     );
 
     // 1. Request permissions + open camera (getUserMedia).
-    //    Permissions must be granted before starting the foreground service
-    //    on API 34+ to avoid SecurityException.
     final captureResult = await _startCapture(
       StartCaptureParams(lens: LensDirection.back),
     );
@@ -153,7 +169,6 @@ class CameraController extends GetxController {
     );
 
     // 7. Register device model with Firestore so Admin sees actual hardware name.
-    //    This write is what triggers admin's _watchPeerList to detect this camera.
     unawaited(
       _registerDevice(
         RegisterDeviceParams(
@@ -170,13 +185,13 @@ class CameraController extends GetxController {
 
   void _onCommand(SyncCommand? cmd) {
     if (cmd == null) return;
-    // Per-camera commands carry a targetPeerId — ignore if it's not us.
     if (cmd.targetPeerId != null && cmd.targetPeerId != _payload?.peerId) return;
     switch (cmd.type) {
       case CommandType.startRecording:
         isRecording.value = true;
         if (cmd.payload?['studioMode'] == true) isStudioMode.value = true;
-        unawaited(_startRecording());
+        final profile = _profileFromPayload(cmd.payload);
+        unawaited(_startRecording(profile: profile));
       case CommandType.stopRecording:
         isRecording.value = false;
         unawaited(_stopAndPublish());
@@ -210,7 +225,9 @@ class CameraController extends GetxController {
         isCoAdmin.value = false;
         coAdminSlots.clear();
       case CommandType.switchActiveCamera:
-        // This command is processed by the primary admin, not the camera.
+        // Co-admin switching is handled by the Admin side. On the camera side
+        // there's nothing to do — the camera keeps streaming regardless of
+        // which camera is currently on air.
         break;
     }
   }
@@ -222,8 +239,6 @@ class CameraController extends GetxController {
         track.enabled = !muted;
       }
     }
-    // Also mute via the RTCRtpSender — reliable after lens switches because
-    // the sender retains the original track reference.
     final peerId = _payload?.peerId;
     if (peerId != null) {
       await _webRtcService.setAudioSenderEnabled(peerId, !muted);
@@ -233,9 +248,6 @@ class CameraController extends GetxController {
   void _setVideoPaused(bool paused) {
     final stream = _localStream;
     if (stream == null) return;
-    // Disabling the video track makes WebRTC send black frames, pausing the
-    // live feed. Local recording continues because the native recorder reads
-    // directly from the camera hardware, not from the track's enabled state.
     for (final track in stream.getVideoTracks()) {
       track.enabled = !paused;
     }
@@ -264,14 +276,44 @@ class CameraController extends GetxController {
     }
   }
 
-  Future<void> _startRecording() async {
+  static RecordingProfile? _profileFromPayload(Map<String, dynamic>? p) {
+    if (p == null) return null;
+    final w = (p['width'] as num?)?.toInt();
+    final h = (p['height'] as num?)?.toInt();
+    final fps = (p['frameRate'] as num?)?.toInt();
+    if (w == null || h == null || fps == null) return null;
+    return RecordingProfile(
+      width: w,
+      height: h,
+      frameRate: fps,
+      codec: p['codec'] as String? ?? 'H264',
+    );
+  }
+
+  Future<void> _startRecording({RecordingProfile? profile}) async {
     final stream = _localStream;
     final payload = _payload;
     if (stream == null || payload == null) return;
+
+    // Use the profile selected by the Admin when available. The Admin sends
+    // the selected profile in the startRecording command payload. If no
+    // profile was provided, fall back to a lower resolution to avoid
+    // double-encoding bottleneck — the Admin records the full-quality remote
+    // WebRTC stream for the final merge, and the camera's local file is only
+    // used as a fallback source in the merge pipeline.
+    final localProfile = profile ??
+        const RecordingProfile(
+          width: 640,
+          height: 480,
+          frameRate: 15,
+          codec: 'H264',
+        );
+
     await _recordingService.startRecording(
       stream: stream,
       peerId: payload.peerId,
       recordAudio: !isStudioMode.value,
+      profile: localProfile,
     );
   }
 
@@ -279,17 +321,11 @@ class CameraController extends GetxController {
     final file = await _recordingService.stopRecording();
     final payload = _payload;
     if (file == null || payload == null) {
-      dev.log(
-        '_stopAndPublish: aborted — file=$file payload=$payload',
-        name: 'CameraController',
-      );
+      dev.log('_stopAndPublish: aborted — file=$file payload=$payload', name: 'CameraController');
       return;
     }
 
-    dev.log(
-      '_stopAndPublish: file=${file.path} size=${await file.length()}',
-      name: 'CameraController',
-    );
+    dev.log('_stopAndPublish: file=${file.path} size=${await file.length()}', name: 'CameraController');
 
     final ip = await TransferServer.getLanIp();
     if (ip == null) {
@@ -300,14 +336,10 @@ class CameraController extends GetxController {
     final filename = file.uri.pathSegments.last;
     final sizeBytes = await file.length();
 
-    // Register BEFORE publishing so the server is ready when admin requests.
     _transferServer.register(filename, file.path);
 
     final downloadUrl = 'http://$ip:${TransferServer.port}/$filename';
-    dev.log(
-      '_stopAndPublish: publishing URL=$downloadUrl  size=$sizeBytes  serverRunning=${_transferServer.isRunning}',
-      name: 'CameraController',
-    );
+    dev.log('_stopAndPublish: publishing URL=$downloadUrl  size=$sizeBytes', name: 'CameraController');
 
     final result = await _publishRecordingInfo(
       PublishRecordingInfoParams(
@@ -326,11 +358,8 @@ class CameraController extends GetxController {
       onSuccess: (_) => dev.log('_stopAndPublish: Firestore publish OK', name: 'CameraController'),
       onFailure: (f) {
         dev.log('_stopAndPublish: Firestore publish FAILED — ${f.message}', name: 'CameraController');
-        Get.snackbar(
-          'Transfer Error',
-          'Could not publish recording info: ${f.message}',
-          snackPosition: SnackPosition.BOTTOM,
-        );
+        Get.snackbar('Transfer Error', 'Could not publish recording info: ${f.message}',
+            snackPosition: SnackPosition.BOTTOM);
       },
     );
   }
@@ -363,7 +392,6 @@ class CameraController extends GetxController {
     _localStream = result.valueOrNull!;
     localRenderer.srcObject = _localStream;
 
-    // replaceTrack does not renegotiate SDP — safe to call on a live connection.
     final videoTrack = _localStream!.getVideoTracks().firstOrNull;
     if (videoTrack != null) {
       await _webRtcService.replaceVideoTrack(payload.peerId, videoTrack);
@@ -379,6 +407,7 @@ class CameraController extends GetxController {
     final payload = _payload;
     if (payload == null) return;
     _payload = null;
+    _expectedPin = null;
     sessionPin.value = null;
     slotLabel.value = '';
     isRecording.value = false;

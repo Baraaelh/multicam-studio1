@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
 import '../../../../core/error/exceptions.dart';
+import '../../../session/domain/entities/recording_profile.dart';
 
 abstract interface class SignalingRemoteDataSource {
   Future<void> setOfferField(
@@ -36,15 +37,20 @@ abstract interface class SignalingRemoteDataSource {
 
   Future<void> clearPeerSignaling(String sessionId, String peerId);
 
-  Future<void> registerDevice(String sessionId, String peerId, String deviceName);
+  Future<void> registerDevice(
+    String sessionId,
+    String peerId,
+    String deviceName,
+    List<Map<String, dynamic>> capabilities,
+  );
 
   Stream<String?> watchDeviceName(String sessionId, String peerId);
 
   /// Looks up a session by its 6-digit code. Returns null if not found.
   Future<String?> lookupSessionCode(String code);
 
-  /// Emits the full peer list whenever it changes (for dynamic camera join).
-  Stream<List<({String peerId, String? deviceName})>> watchPeers(String sessionId);
+  /// Emits the full peer list (with capabilities) whenever it changes.
+  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(String sessionId);
 }
 
 class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
@@ -138,6 +144,13 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
             (snapshot) => snapshot.docChanges
                 .where((c) => c.type == DocumentChangeType.added)
                 .map((c) => c.doc.data()!),
+          )
+          // Deduplicate candidates by their candidate string to prevent
+          // re-processing the same ICE candidate on Firestore snapshot replays.
+          .distinct(
+            (a, b) =>
+                a[FirestoreConstants.candidate] ==
+                b[FirestoreConstants.candidate],
           );
 
   @override
@@ -164,12 +177,14 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     String sessionId,
     String peerId,
     String deviceName,
+    List<Map<String, dynamic>> capabilities,
   ) async {
     try {
       await _peerDoc(sessionId, peerId).set(
         {
           'deviceName': deviceName,
           'joinedAt': FieldValue.serverTimestamp(),
+          FirestoreConstants.capabilities: capabilities,
         },
         SetOptions(merge: true),
       );
@@ -199,7 +214,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
   }
 
   @override
-  Stream<List<({String peerId, String? deviceName})>> watchPeers(
+  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(
     String sessionId,
   ) =>
       _firestore
@@ -211,15 +226,30 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
               .map((doc) => (
                     peerId: doc.id,
                     deviceName: doc.data()['deviceName']?.toString(),
+                    capabilities: _parseCapabilities(doc.data()[FirestoreConstants.capabilities]),
                   ))
               .toList());
+
+  static List<RecordingProfile> _parseCapabilities(dynamic raw) {
+    if (raw == null) return [];
+    try {
+      return (raw as List<dynamic>)
+          .whereType<Map<Object?, Object?>>()
+          .map((m) => RecordingProfile.fromMap(Map<String, dynamic>.from(m)))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
 
   Future<void> _deleteCandidates(
     String sessionId,
     String peerId, {
     required bool isAdmin,
   }) async {
-    const batchSize = 100;
+    // Firestore batch limit is 500 writes per commit. Use the max batch size
+    // to minimize the number of round-trips when cleaning up many candidates.
+    const batchSize = 500;
     while (true) {
       final snap = await _candidatesCollection(sessionId, peerId, isAdmin: isAdmin)
           .limit(batchSize)

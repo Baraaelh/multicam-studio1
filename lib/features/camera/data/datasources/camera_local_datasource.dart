@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:permission_handler/permission_handler.dart';
 
@@ -12,9 +13,13 @@ abstract interface class CameraLocalDataSource {
   Future<webrtc.MediaStream> getUserMedia(LensDirection lens);
   Future<void> disposeStream(webrtc.MediaStream stream);
   Future<String> getDeviceName();
+  Future<List<Map<String, dynamic>>> getRecordingCapabilities();
 }
 
 class CameraLocalDataSourceImpl implements CameraLocalDataSource {
+  static const _channel =
+      MethodChannel('com.multicamstudio.multicam_studio/camera_service');
+
   static Map<String, dynamic> _buildConstraints(LensDirection lens) => {
         'video': {
           'facingMode': lens == LensDirection.back ? 'environment' : 'user',
@@ -78,4 +83,28 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
     if (model.toLowerCase().startsWith(mfr.toLowerCase())) return model;
     return '$mfr $model';
   }
+
+  @override
+  Future<List<Map<String, dynamic>>> getRecordingCapabilities() async {
+    if (!Platform.isAndroid) {
+      return [
+        {'width': 1920, 'height': 1080, 'frameRate': 30, 'codec': 'H264'},
+        {'width': 1280, 'height': 720, 'frameRate': 30, 'codec': 'H264'},
+      ];
+    }
+    try {
+      final raw = await _channel.invokeListMethod<Object?>('getRecordingCapabilities');
+      if (raw == null) return _fallbackCapabilities();
+      return raw
+          .whereType<Map<Object?, Object?>>()
+          .map((m) => m.cast<String, dynamic>())
+          .toList();
+    } catch (_) {
+      return _fallbackCapabilities();
+    }
+  }
+
+  static List<Map<String, dynamic>> _fallbackCapabilities() => [
+        {'width': 1280, 'height': 720, 'frameRate': 30, 'codec': 'H264'},
+      ];
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as dev;
 import 'dart:io';
 
@@ -117,6 +118,9 @@ class RenderService extends GetxService {
     final output = '${dir.path}/render_$timestamp.mp4';
     dev.log('output path: $output', name: _tag);
 
+    final capturedAdminAudioPath = _adminAudioPath;
+    final capturedSources = List<RenderSource>.from(sources);
+
     await _ffmpegService.renderGrid(
       inputPaths: paths,
       outputPath: output,
@@ -132,7 +136,7 @@ class RenderService extends GetxService {
         outputPath.value = path;
         isRendering.value = false;
         renderProgress.value = 1.0;
-        _ffmpegService.saveToPublicStorage(path, path.split('/').last);
+        unawaited(_ffmpegService.saveToPublicStorage(path, path.split('/').last));
       },
       onError: (err) {
         dev.log('startRender FAILED — $err', name: _tag);
@@ -140,6 +144,35 @@ class RenderService extends GetxService {
         isRendering.value = false;
       },
     );
+
+    if (errorMessage.value == null) {
+      _deleteSourceFiles(capturedSources, capturedAdminAudioPath);
+    }
+  }
+
+  void _deleteSourceFiles(List<RenderSource> renderSources, String? adminAudioPath) {
+    for (final source in renderSources) {
+      try {
+        final f = File(source.path);
+        if (f.existsSync()) {
+          f.deleteSync();
+          dev.log('deleted source: ${source.filename}', name: _tag);
+        }
+      } catch (e) {
+        dev.log('failed to delete ${source.filename}: $e', name: _tag);
+      }
+    }
+    if (adminAudioPath != null) {
+      try {
+        final f = File(adminAudioPath);
+        if (f.existsSync()) {
+          f.deleteSync();
+          dev.log('deleted admin audio: ${adminAudioPath.split('/').last}', name: _tag);
+        }
+      } catch (e) {
+        dev.log('failed to delete admin audio: $e', name: _tag);
+      }
+    }
   }
 
   Future<void> cancelRender() async {

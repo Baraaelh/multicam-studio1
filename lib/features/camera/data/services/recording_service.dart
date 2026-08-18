@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:path_provider/path_provider.dart';
 
+import '../../../session/domain/entities/recording_profile.dart';
+
 /// Records the local camera stream to an MP4 file via a native I420VideoRecorder
 /// that bypasses EGL entirely.
 ///
@@ -28,6 +30,7 @@ class RecordingService {
     required webrtc.MediaStream stream,
     required String peerId,
     bool recordAudio = true,
+    RecordingProfile? profile,
   }) async {
     if (_isRecording) return;
 
@@ -36,7 +39,8 @@ class RecordingService {
 
     dev.log(
       'startRecording — videoTracks=${videoTracks.length}  '
-      'trackId=${videoTrack?.id}  enabled=${videoTrack?.enabled}',
+      'trackId=${videoTrack?.id}  enabled=${videoTrack?.enabled}  '
+      'profile=${profile?.label ?? "default"}',
       name: _tag,
     );
 
@@ -52,11 +56,18 @@ class RecordingService {
     final filePath = '${dir.path}/$filename';
 
     try {
-      await _channel.invokeMethod<void>('startRecording', {
+      final params = <String, dynamic>{
         'trackId': videoTrack.id,
         'outputPath': filePath,
         'recordAudio': recordAudio,
-      });
+      };
+      if (profile != null) {
+        params['width'] = profile.width;
+        params['height'] = profile.height;
+        params['frameRate'] = profile.frameRate;
+        params['bitRate'] = profile.recommendedBitRate;
+      }
+      await _channel.invokeMethod<void>('startRecording', params);
       _currentFilePath = filePath;
       _isRecording = true;
       dev.log('startRecording — started → $filePath', name: _tag);

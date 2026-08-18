@@ -22,8 +22,8 @@ class ClockRepositoryImpl implements ClockRepository {
         FirestoreConstants.commandType: type.name,
         FirestoreConstants.issuedAt: FieldValue.serverTimestamp(),
         FirestoreConstants.bufferMs: bufferMs,
-        if (targetPeerId != null) 'targetPeerId': targetPeerId,
-        if (payload != null) 'payload': payload,
+        'targetPeerId': targetPeerId,
+        'payload': payload,
       });
 
   @override

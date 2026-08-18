@@ -5,14 +5,18 @@ import '../platform/camera_service_platform.dart';
 import '../services/clock_sync_service.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/webrtc_service.dart';
+import '../../features/camera/data/services/recording_service.dart';
+import '../../features/camera/data/services/transfer_server_service.dart';
 import '../../features/admin/data/datasources/session_remote_datasource.dart';
 import '../../features/admin/data/repositories/session_repository_impl.dart';
 import '../../features/admin/domain/repositories/session_repository.dart';
 import '../../features/admin/domain/usecases/create_session.dart';
 import '../../features/admin/domain/usecases/end_session.dart';
+import '../../features/admin/domain/usecases/watch_device_name.dart';
 import '../../features/camera/data/datasources/camera_local_datasource.dart';
 import '../../features/camera/data/repositories/camera_repository_impl.dart';
 import '../../features/camera/domain/repositories/camera_repository.dart';
+import '../../features/camera/domain/usecases/parse_qr_payload.dart';
 import '../../features/camera/domain/usecases/register_device.dart';
 import '../../features/camera/domain/usecases/start_capture.dart';
 import '../../features/camera/domain/usecases/stop_capture.dart';
@@ -58,6 +62,8 @@ void configureDependencies() {
   getIt.registerLazySingleton<ClockSyncService>(
     () => ClockSyncService(firestore: getIt<FirebaseFirestore>()),
   );
+  getIt.registerLazySingleton<RecordingService>(() => RecordingService());
+  getIt.registerLazySingleton<TransferServer>(() => TransferServer());
 
   // --- Clock / timeline ---
   getIt.registerLazySingleton<ClockRemoteDataSource>(
@@ -103,6 +109,7 @@ void configureDependencies() {
   getIt.registerFactory(() => StartCapture(getIt<CameraRepository>()));
   getIt.registerFactory(() => StopCapture(getIt<CameraRepository>()));
   getIt.registerFactory(() => SwitchLens(getIt<CameraRepository>()));
+  getIt.registerFactory(() => ParseQrPayload());
   getIt.registerFactory(() => RegisterDevice(
     signalingRepository: getIt<SignalingRepository>(),
     cameraDataSource: getIt<CameraLocalDataSource>(),
@@ -131,4 +138,7 @@ void configureDependencies() {
   );
   getIt.registerFactory(() => CreateSession(getIt<SessionRepository>()));
   getIt.registerFactory(() => EndSession(getIt<SessionRepository>()));
+  getIt.registerFactory(
+    () => WatchDeviceName(getIt<SignalingRepository>()),
+  );
 }

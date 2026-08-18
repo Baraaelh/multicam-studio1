@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 
 import '../../../../core/services/clock_sync_service.dart';
 import '../../../../features/session/domain/entities/peer_connection_state.dart';
+import '../../../../features/session/domain/entities/recording_profile.dart';
 import '../../../../features/session/presentation/controllers/clock_controller.dart';
 import '../../domain/entities/camera_slot.dart';
 import '../../domain/entities/session.dart';
@@ -235,7 +236,7 @@ class _PreviewStrip extends StatelessWidget {
                 _RecordingBar(
                   isRecording: isRecording,
                   hasRecordings: hasRecordings,
-                  onStartRecording: controller.issueStartRecording,
+                  onStartRecording: () => _showQualityPicker(context),
                   onStopRecording: controller.issueStopRecording,
                   onTransfer: () => TransferSheet.show(context),
                 ),
@@ -319,6 +320,19 @@ class _PreviewStrip extends StatelessWidget {
           }),
         ),
       ),
+    );
+  }
+
+  void _showQualityPicker(BuildContext context) {
+    final ctrl = Get.find<AdminController>();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => _QualityPickerSheet(controller: ctrl),
     );
   }
 
@@ -427,65 +441,16 @@ class _RecordingBar extends StatelessWidget {
         ],
         if (!isRecording && hasRecordings) ...[
           const SizedBox(width: 10),
-          Obx(() {
-            final ctrl = Get.find<AdminController>();
-            if (ctrl.autoDownloading.value) {
-              final done = ctrl.downloadedPaths.length;
-              final total = ctrl.recordings.length;
-              return Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                decoration: BoxDecoration(
-                  color: Colors.blueAccent.withValues(alpha: 0.15),
-                  border: Border.all(color: Colors.blueAccent.shade400),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: Colors.blueAccent,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      total > 0
-                          ? 'Downloading $done/$total'
-                          : 'Preparing…',
-                      style: const TextStyle(
-                        color: Colors.blueAccent,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-            final hasFailed = ctrl.downloadFailed.isNotEmpty;
-            return OutlinedButton.icon(
-              onPressed: onTransfer,
-              icon: Icon(
-                hasFailed ? Icons.warning_amber_rounded : Icons.download,
-                size: 16,
-              ),
-              label: Text(hasFailed ? 'Transfer ⚠' : 'Transfer'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor:
-                    hasFailed ? Colors.orange : Colors.white70,
-                side: BorderSide(
-                  color: hasFailed
-                      ? Colors.orange.shade700
-                      : Colors.white24,
-                ),
-                minimumSize: const Size(110, 36),
-              ),
-            );
-          }),
+          OutlinedButton.icon(
+            onPressed: onTransfer,
+            icon: const Icon(Icons.folder_open, size: 16),
+            label: const Text('Recordings'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white70,
+              side: const BorderSide(color: Colors.white24),
+              minimumSize: const Size(110, 36),
+            ),
+          ),
         ],
       ],
     );
@@ -886,6 +851,340 @@ class _ZoomButton extends StatelessWidget {
           color: enabled ? Colors.white : Colors.white24,
           size: 20,
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quality picker bottom sheet — shown before recording starts
+// ---------------------------------------------------------------------------
+
+class _QualityPickerSheet extends StatelessWidget {
+  final AdminController controller;
+  const _QualityPickerSheet({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      minChildSize: 0.4,
+      maxChildSize: 0.92,
+      builder: (_, scrollCtrl) => Obx(() {
+        final profiles = controller.compatibleProfiles;
+        final selected = controller.selectedProfile.value;
+        final slots = controller.slots;
+        final knownCount = slots
+            .where((s) => controller.cameraCapabilities.containsKey(s.peerId))
+            .length;
+        final allReported = knownCount == slots.length && slots.isNotEmpty;
+
+        return ListView(
+          controller: scrollCtrl,
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          children: [
+            // Handle bar
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+
+            // Title row
+            Row(
+              children: [
+                const Text(
+                  'Recording Quality',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${slots.length} camera${slots.length == 1 ? '' : 's'}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+
+            // Capabilities loading indicator
+            if (!allReported && slots.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Profiles from $knownCount of ${slots.length} cameras',
+                  style: const TextStyle(color: Colors.orange, fontSize: 12),
+                ),
+              ),
+
+            const SizedBox(height: 16),
+
+            // Profile list
+            if (profiles.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+                      ),
+                      SizedBox(height: 12),
+                      Text(
+                        'Discovering camera capabilities…',
+                        style: TextStyle(color: Colors.white38, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              ...profiles.asMap().entries.map((entry) {
+                final idx = entry.key;
+                final profile = entry.value;
+                final isSelected = selected == profile;
+                final isRecommended = idx == 0;
+                return _ProfileTile(
+                  profile: profile,
+                  isSelected: isSelected,
+                  isRecommended: isRecommended,
+                  onTap: () => controller.selectedProfile.value = profile,
+                );
+              }),
+
+            const SizedBox(height: 20),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 12),
+
+            // Session analyzer
+            _SessionAnalyzer(controller: controller),
+
+            const SizedBox(height: 24),
+
+            // START RECORDING button
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                controller.issueStartRecording();
+              },
+              icon: const Icon(Icons.fiber_manual_record, size: 16),
+              label: const Text(
+                'START RECORDING',
+                style: TextStyle(letterSpacing: 1.2, fontWeight: FontWeight.bold),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.red.shade700,
+                minimumSize: const Size.fromHeight(50),
+              ),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+}
+
+class _ProfileTile extends StatelessWidget {
+  final RecordingProfile profile;
+  final bool isSelected;
+  final bool isRecommended;
+  final VoidCallback onTap;
+
+  const _ProfileTile({
+    required this.profile,
+    required this.isSelected,
+    required this.isRecommended,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.red.shade900.withValues(alpha: 0.5)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? Colors.red.shade400 : Colors.white12,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+              color: isSelected ? Colors.red.shade300 : Colors.white38,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                profile.label,
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.white70,
+                  fontSize: 15,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ),
+            if (isRecommended)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade800,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text(
+                  'RECOMMENDED',
+                  style: TextStyle(
+                    color: Colors.greenAccent,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionAnalyzer extends StatelessWidget {
+  final AdminController controller;
+  const _SessionAnalyzer({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final selected = controller.selectedProfile.value;
+      final profiles = controller.compatibleProfiles;
+      final highest = profiles.isNotEmpty ? profiles.first : null;
+      final cameraCount = controller.slots.length;
+      final allCompat = selected != null && profiles.contains(selected);
+
+      final bitrateMbps = selected != null
+          ? (selected.recommendedBitRate / 1_000_000).toStringAsFixed(0)
+          : '—';
+      final gbPerHour = selected != null
+          ? selected.storageGbPerHour.toStringAsFixed(1)
+          : '—';
+      final totalGb = selected != null && cameraCount > 0
+          ? (selected.storageGbPerHour * cameraCount).toStringAsFixed(1)
+          : '—';
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'SESSION ANALYZER',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 11,
+              letterSpacing: 1.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _AnalyzerRow(
+            label: 'Connected Cameras',
+            value: '$cameraCount',
+            valueColor: Colors.white,
+          ),
+          _AnalyzerRow(
+            label: 'Highest Common Profile',
+            value: highest?.label ?? '—',
+            valueColor: Colors.greenAccent.shade400,
+          ),
+          _AnalyzerRow(
+            label: 'Selected Profile',
+            value: selected?.label ?? '—',
+            valueColor: Colors.white,
+          ),
+          _AnalyzerRow(
+            label: 'All Cameras Compatible',
+            value: allCompat ? 'YES ✓' : 'NO ✗',
+            valueColor: allCompat ? Colors.greenAccent : Colors.redAccent,
+          ),
+          _AnalyzerRow(
+            label: 'Estimated Bitrate',
+            value: '$bitrateMbps Mbps per camera',
+            valueColor: Colors.white70,
+          ),
+          _AnalyzerRow(
+            label: 'Est. Storage / Hour',
+            value: '$gbPerHour GB × $cameraCount = $totalGb GB total',
+            valueColor: Colors.white70,
+          ),
+        ],
+      );
+    });
+  }
+}
+
+class _AnalyzerRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color valueColor;
+
+  const _AnalyzerRow({
+    required this.label,
+    required this.value,
+    required this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 5,
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ),
+          Expanded(
+            flex: 5,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: valueColor,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
