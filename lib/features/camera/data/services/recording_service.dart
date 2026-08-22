@@ -22,9 +22,17 @@ class RecordingService {
 
   String? _currentFilePath;
   bool _isRecording = false;
+  // Cached once — the documents directory never changes during app lifetime.
+  String? _docsDir;
 
   bool get isRecording => _isRecording;
   String? get lastFilePath => _currentFilePath;
+
+  /// Resolves and caches the documents directory. Call once at session start
+  /// so the path is ready when the timed recording command fires.
+  Future<void> warmUp() async {
+    _docsDir ??= (await getApplicationDocumentsDirectory()).path;
+  }
 
   Future<void> startRecording({
     required webrtc.MediaStream stream,
@@ -49,11 +57,13 @@ class RecordingService {
       return;
     }
 
-    final dir = await getApplicationDocumentsDirectory();
+    // Use cached path; fall back to resolving if warmUp was never called.
+    final dir = _docsDir ?? (await getApplicationDocumentsDirectory()).path;
+    _docsDir = dir;
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final shortId = peerId.length >= 8 ? peerId.substring(0, 8) : peerId;
     final filename = 'rec_${shortId}_$timestamp.mp4';
-    final filePath = '${dir.path}/$filename';
+    final filePath = '$dir/$filename';
 
     try {
       final params = <String, dynamic>{

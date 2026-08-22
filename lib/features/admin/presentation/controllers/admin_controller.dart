@@ -283,11 +283,19 @@ class AdminController extends GetxController {
       if (isStudioMode.value) 'studioMode': true,
       if (profile != null) ...profile.toMap(),
     };
-    await _clockController.issueCommand(
+    final commandId = await _clockController.issueCommand(
       s.sessionId,
       CommandType.startRecording,
+      bufferMs: 1000,
       payload: payload.isEmpty ? null : payload,
     );
+    if (commandId != null) {
+      _sendLanCommand(
+        commandId,
+        CommandType.startRecording,
+        payload: payload.isEmpty ? null : payload,
+      );
+    }
     isRecording.value = true;
     recordingSeconds.value = 0;
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -300,13 +308,16 @@ class AdminController extends GetxController {
     if (s == null || !_isValidSession()) return;
 
     _recordingStoppedAt =
-        DateTime.now().add(const Duration(milliseconds: 1000));
+        DateTime.now().add(const Duration(milliseconds: 200));
 
-    await _clockController.issueCommand(
+    final stopId = await _clockController.issueCommand(
       s.sessionId,
       CommandType.stopRecording,
       bufferMs: 1000,
     );
+    if (stopId != null) {
+      _sendLanCommand(stopId, CommandType.stopRecording);
+    }
     if (isStudioMode.value) {
       try {
         await _channel.invokeMethod<void>('stopAdminAudioRecording');
@@ -349,12 +360,19 @@ class AdminController extends GetxController {
       }
       final total = response.contentLength;
       var received = 0;
+      var lastNotified = 0.0;
       final sink = File(savePath).openWrite();
       try {
         await for (final chunk in response) {
           sink.add(chunk);
           received += chunk.length;
-          if (total > 0) downloadProgress[info.filename] = received / total;
+          if (total > 0) {
+            final progress = received / total;
+            if (progress - lastNotified >= 0.01) {
+              lastNotified = progress;
+              downloadProgress[info.filename] = progress;
+            }
+          }
         }
       } finally {
         await sink.close();
@@ -760,19 +778,60 @@ class AdminController extends GetxController {
   Future<void> _autoStartRecordingForPeer(String peerId, String sessionId) async {
     if (!_isValidSession()) return;
     const bufferMs = 1000;
-    _cameraRecordingStartAt[peerId] = DateTime.now().add(const Duration(milliseconds: bufferMs));
+    _cameraRecordingStartAt[peerId] = DateTime.now().add(const Duration(milliseconds: 200));
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
       if (isStudioMode.value) 'studioMode': true,
       if (profile != null) ...profile.toMap(),
     };
-    await _clockController.issueCommand(
+    final commandId = await _clockController.issueCommand(
       sessionId,
       CommandType.startRecording,
       bufferMs: bufferMs,
       targetPeerId: peerId,
       payload: payload.isEmpty ? null : payload,
     );
+    if (commandId != null) {
+      _sendLanCommand(
+        commandId,
+        CommandType.startRecording,
+        targetPeerId: peerId,
+        payload: payload.isEmpty ? null : payload,
+      );
+    }
+  }
+
+  /// Sends a recording command directly to cameras over the LAN WebRTC data
+  /// channel. The [commandId] is the Firestore doc ID so cameras can deduplicate
+  /// against the Firestore fallback using a single shared ID.
+  void _sendLanCommand(
+    String commandId,
+    CommandType type, {
+    String? targetPeerId,
+    Map<String, dynamic>? payload,
+  }) {
+    // Compute executeAt in server-equivalent milliseconds using the synced offset.
+    // LAN buffer is 200 ms — tight enough to be fast, generous enough for WiFi jitter.
+    const lanBufferMs = 200;
+    final serverNowMs = DateTime.now().millisecondsSinceEpoch -
+        _clockController.offsetMs.value;
+    final executeAtMs = serverNowMs + lanBufferMs;
+
+    final msg = jsonEncode({
+      'commandId': commandId,
+      'type': type.name,
+      'executeAtMs': executeAtMs,
+      ?'targetPeerId': targetPeerId,
+      ?'payload': payload,
+    });
+
+    final targets = targetPeerId != null
+        ? [targetPeerId]
+        : slots.map((s) => s.peerId).toList();
+
+    for (final peerId in targets) {
+      unawaited(_webRtcService.sendToDataChannel(peerId, msg));
+    }
   }
 
   void _onCoAdminCommand(SyncCommand? cmd) {
@@ -785,7 +844,7 @@ class AdminController extends GetxController {
     _deviceNameSubs[peerId]?.cancel();
     _deviceNameSubs[peerId] = _watchDeviceName(
       WatchDeviceNameParams(sessionId: sessionId, peerId: peerId),
-    ).where((name) => name != null && name.isNotEmpty).listen((deviceName) {
+    ).where((name) => name != null && name.isNotEmpty).distinct().listen((deviceName) {
       final idx = slots.indexWhere((s) => s.peerId == peerId);
       if (idx >= 0) slots[idx] = slots[idx].copyWith(deviceName: deviceName);
     });

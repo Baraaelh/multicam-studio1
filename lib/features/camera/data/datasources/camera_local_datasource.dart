@@ -23,8 +23,8 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
   static Map<String, dynamic> _buildConstraints(LensDirection lens) => {
         'video': {
           'facingMode': lens == LensDirection.back ? 'environment' : 'user',
-          'width': {'ideal': 1920, 'min': 1280},
-          'height': {'ideal': 1080, 'min': 720},
+          'width': {'ideal': 1280, 'min': 720},
+          'height': {'ideal': 720, 'min': 480},
           'frameRate': {'ideal': 30, 'max': 30},
         },
         'audio': {

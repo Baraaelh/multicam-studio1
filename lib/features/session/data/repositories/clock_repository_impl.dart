@@ -11,7 +11,7 @@ class ClockRepositoryImpl implements ClockRepository {
       : _dataSource = dataSource;
 
   @override
-  Future<void> addCommand(
+  Future<String> addCommand(
     String sessionId,
     CommandType type,
     int bufferMs, {

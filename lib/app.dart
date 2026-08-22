@@ -24,6 +24,7 @@ class App extends StatelessWidget {
       initialRoute: '/splash',
       getPages: [
         GetPage(name: '/splash', page: () => const SplashPage()),
+        GetPage(name: '/', page: () => const ModeSelectPage()),
         GetPage(
           name: '/camera/scan',
           page: () => const CodeJoinPage(),
@@ -47,8 +48,8 @@ class App extends StatelessWidget {
   }
 }
 
-class _ModeSelectPage extends StatelessWidget {
-  const _ModeSelectPage();
+class ModeSelectPage extends StatelessWidget {
+  const ModeSelectPage();
 
   @override
   Widget build(BuildContext context) {
@@ -86,6 +87,21 @@ class _ModeSelectPage extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   minimumSize: const Size(220, 52),
                 ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  TextButton(
+                    onPressed: () => Get.toNamed<void>('/border'),
+                    child: const Text('Terms'),
+                  ),
+                  const SizedBox(width: 16),
+                  TextButton(
+                    onPressed: () => Get.toNamed<void>('/policy'),
+                    child: const Text('Privacy'),
+                  ),
+                ],
               ),
             ],
           ),

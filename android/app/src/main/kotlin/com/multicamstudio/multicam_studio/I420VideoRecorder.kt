@@ -355,7 +355,6 @@ class I420VideoRecorder(
         val pad = ByteArray(stride) // zero-filled, reused for alignment padding rows
 
         // Y plane: stride bytes per row × sliceHeight rows.
-        // Bytes [w..stride-1] in yRow are always 0 (ByteArray init) and never overwritten.
         val yRow = ByteArray(stride)
         val yBuf = i420.dataY
         for (row in 0 until h) {
@@ -366,14 +365,20 @@ class I420VideoRecorder(
         for (row in h until sliceHeight) dst.put(pad, 0, stride)
 
         // UV plane (NV12 — interleaved U,V): stride bytes per row × (sliceHeight/2) rows.
-        // Bytes [cW*2..stride-1] in uvRow are always 0 (ByteArray init) and never overwritten.
+        // Bulk ByteBuffer.get(array) uses System.arraycopy internally and is ~5× faster
+        // than calling uBuf.get() / vBuf.get() once per pixel pair, which matters at
+        // 720p (460 k calls/frame) and especially at 1080p+ (1 M+ calls/frame).
+        val uArr = ByteArray(cW)
+        val vArr = ByteArray(cW)
         val uvRow = ByteArray(stride)
         val uBuf = i420.dataU; val vBuf = i420.dataV
         for (row in 0 until cH) {
             uBuf.position(row * i420.strideU)
             vBuf.position(row * i420.strideV)
+            uBuf.get(uArr, 0, cW)
+            vBuf.get(vArr, 0, cW)
             var j = 0
-            for (col in 0 until cW) { uvRow[j++] = uBuf.get(); uvRow[j++] = vBuf.get() }
+            for (col in 0 until cW) { uvRow[j++] = uArr[col]; uvRow[j++] = vArr[col] }
             dst.put(uvRow, 0, stride)
         }
         for (row in cH until sliceHeight / 2) dst.put(pad, 0, stride)
@@ -381,6 +386,8 @@ class I420VideoRecorder(
 
     // Nearest-neighbour scale from source I420 dimensions to targetWidth × targetHeight,
     // then interleave into NV12 with encoder stride/slice padding.
+    // Source rows are bulk-read into temp arrays once per row so that the inner
+    // pixel loop does fast array indexing rather than per-pixel ByteBuffer.get().
     private fun writeNV12Scaled(i420: VideoFrame.I420Buffer, dst: ByteBuffer, stride: Int, sliceHeight: Int) {
         val srcW = i420.width; val srcH = i420.height
         val srcCW = (srcW + 1) / 2; val srcCH = (srcH + 1) / 2
@@ -391,28 +398,42 @@ class I420VideoRecorder(
         val yRatioC = srcCH.toFloat() / dstCH
         val pad = ByteArray(stride)
 
+        val ySrcRow = ByteArray(srcW)
         val yRow = ByteArray(stride)
+        var prevSyY = -1
         for (dy in 0 until targetHeight) {
             val sy = (dy * yRatioY).toInt().coerceIn(0, srcH - 1)
-            val srcOff = sy * i420.strideY
+            if (sy != prevSyY) {
+                i420.dataY.position(sy * i420.strideY)
+                i420.dataY.get(ySrcRow, 0, srcW)
+                prevSyY = sy
+            }
             for (dx in 0 until targetWidth) {
                 val sx = (dx * xRatioY).toInt().coerceIn(0, srcW - 1)
-                yRow[dx] = i420.dataY.get(srcOff + sx)
+                yRow[dx] = ySrcRow[sx]
             }
             dst.put(yRow, 0, stride)
         }
         for (row in targetHeight until sliceHeight) dst.put(pad, 0, stride)
 
+        val uSrcRow = ByteArray(srcCW)
+        val vSrcRow = ByteArray(srcCW)
         val uvRow = ByteArray(stride)
+        var prevSyC = -1
         for (dy in 0 until dstCH) {
             val sy = (dy * yRatioC).toInt().coerceIn(0, srcCH - 1)
-            val uOff = sy * i420.strideU
-            val vOff = sy * i420.strideV
+            if (sy != prevSyC) {
+                i420.dataU.position(sy * i420.strideU)
+                i420.dataU.get(uSrcRow, 0, srcCW)
+                i420.dataV.position(sy * i420.strideV)
+                i420.dataV.get(vSrcRow, 0, srcCW)
+                prevSyC = sy
+            }
             var j = 0
             for (dx in 0 until dstCW) {
                 val sx = (dx * xRatioC).toInt().coerceIn(0, srcCW - 1)
-                uvRow[j++] = i420.dataU.get(uOff + sx)
-                uvRow[j++] = i420.dataV.get(vOff + sx)
+                uvRow[j++] = uSrcRow[sx]
+                uvRow[j++] = vSrcRow[sx]
             }
             dst.put(uvRow, 0, stride)
         }

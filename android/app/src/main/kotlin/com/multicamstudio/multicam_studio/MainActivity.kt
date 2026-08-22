@@ -11,9 +11,11 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import com.cloudwebrtc.webrtc.FlutterWebRTCPlugin
+import com.cloudwebrtc.webrtc.utils.EglUtils
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import org.webrtc.VideoSink
 import org.webrtc.VideoTrack
 import java.io.File
 import java.io.IOException
@@ -23,7 +25,11 @@ class MainActivity : FlutterActivity() {
     private val channelName = "com.multicamstudio.multicam_studio/camera_service"
     private val tag = "MainActivity"
 
-    private var currentRecorder: I420VideoRecorder? = null
+    // VideoSink reference kept for removeSink(); stop function held separately so
+    // both SurfaceVideoRecorder and I420VideoRecorder can be used without a shared
+    // base class.
+    private var currentRecorder: VideoSink? = null
+    private var currentRecorderStopFn: (((() -> Unit) -> Unit))? = null
     private var currentRecorderTrack: VideoTrack? = null
     private var currentOutputPath: String? = null
 
@@ -112,24 +118,63 @@ class MainActivity : FlutterActivity() {
                             result.error("NOT_VIDEO", "Track is not a VideoTrack: $trackId", null)
                             return@setMethodCallHandler
                         }
-                        try {
-                            Log.i(tag, "DIAG startRecording thread=${Thread.currentThread().name} ts=${System.currentTimeMillis()}")
-                            val recorder = I420VideoRecorder(outputPath, width, height, frameRate, bitRate)
-                            val tStart = System.nanoTime()
-                            recorder.start(recordAudio)
-                            Log.i(tag, "DIAG recorder.start() returned: ${(System.nanoTime() - tStart) / 1_000_000L}ms")
-                            val tSink = System.nanoTime()
-                            videoTrack.addSink(recorder)
-                            Log.i(tag, "DIAG addSink() done: ${(System.nanoTime() - tSink) / 1_000_000L}ms")
-                            currentRecorder = recorder
-                            currentRecorderTrack = videoTrack
-                            currentOutputPath = outputPath
-                            Log.d(tag, "startRecording OK ${width}×${height}@${frameRate}fps ${bitRate}bps recordAudio=$recordAudio → $outputPath")
-                            result.success(null)
-                        } catch (e: Exception) {
-                            Log.e(tag, "startRecording failed: ${e.message}", e)
-                            result.error("RECORD_FAILED", e.message, null)
-                        }
+                        // MediaCodec.createEncoderByType() + configure() + start() can take
+                        // 100–300 ms on mid-range hardware. Running them on the platform thread
+                        // freezes Flutter's UI (and the camera preview) for that whole window.
+                        // Validation is done above (platform-thread-safe); only the slow encoder
+                        // init is moved to a background thread.
+                        Thread {
+                            try {
+                                Log.i(tag, "DIAG startRecording thread=${Thread.currentThread().name} ts=${System.currentTimeMillis()}")
+
+                                // Try GPU surface mode first (zero-copy, no glReadPixels
+                                // per-frame bottleneck). Falls back to I420 CPU path if
+                                // EGL context creation fails on this device.
+                                val sink: VideoSink
+                                val stopFn: ((() -> Unit) -> Unit)
+
+                                var surfaceRec: SurfaceVideoRecorder? = null
+                                try {
+                                    val sharedCtx = EglUtils.getRootEglBaseContext()
+                                    val rec = SurfaceVideoRecorder(
+                                        outputPath, width, height, frameRate, bitRate, sharedCtx)
+                                    val tSurf = System.nanoTime()
+                                    rec.start(recordAudio)
+                                    Log.i(tag, "DIAG SurfaceVideoRecorder.start(): ${(System.nanoTime() - tSurf) / 1_000_000L}ms")
+                                    surfaceRec = rec
+                                } catch (e: Exception) {
+                                    Log.w(tag, "Surface mode unavailable (${e.message}), falling back to I420")
+                                }
+
+                                if (surfaceRec != null) {
+                                    sink = surfaceRec
+                                    stopFn = surfaceRec::stop
+                                } else {
+                                    val rec = I420VideoRecorder(outputPath, width, height, frameRate, bitRate)
+                                    val tI420 = System.nanoTime()
+                                    rec.start(recordAudio)
+                                    Log.i(tag, "DIAG I420VideoRecorder.start(): ${(System.nanoTime() - tI420) / 1_000_000L}ms")
+                                    sink = rec
+                                    stopFn = rec::stop
+                                }
+
+                                val tSink = System.nanoTime()
+                                videoTrack.addSink(sink)
+                                Log.i(tag, "DIAG addSink() done: ${(System.nanoTime() - tSink) / 1_000_000L}ms")
+                                // State variables are only written/read on the platform thread.
+                                runOnUiThread {
+                                    currentRecorder = sink
+                                    currentRecorderStopFn = stopFn
+                                    currentRecorderTrack = videoTrack
+                                    currentOutputPath = outputPath
+                                    Log.d(tag, "startRecording OK ${width}×${height}@${frameRate}fps ${bitRate}bps recordAudio=$recordAudio → $outputPath")
+                                    result.success(null)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(tag, "startRecording failed: ${e.message}", e)
+                                runOnUiThread { result.error("RECORD_FAILED", e.message, null) }
+                            }
+                        }.start()
                     }
                     "startAdminAudioRecording" -> {
                         val outputPath = call.argument<String>("outputPath")
@@ -156,21 +201,27 @@ class MainActivity : FlutterActivity() {
                         rec.stop { runOnUiThread { result.success(null) } }
                     }
                     "stopRecording" -> {
-                        val recorder = currentRecorder
+                        val sink = currentRecorder
+                        val stopFn = currentRecorderStopFn
                         val track = currentRecorderTrack
                         val savedPath = currentOutputPath
                         currentRecorder = null
+                        currentRecorderStopFn = null
                         currentRecorderTrack = null
                         currentOutputPath = null
-                        if (recorder == null) {
+                        if (sink == null || stopFn == null) {
                             result.success(null)
                             return@setMethodCallHandler
                         }
-                        track?.removeSink(recorder)
-                        recorder.stop {
-                            // Export to public Movies so the file is visible in the device
-                            // file manager. Runs on the encoder thread (background) — safe.
-                            // Failure here is non-fatal: internal file still serves via HTTP.
+                        track?.removeSink(sink)
+                        stopFn {
+                            // Notify Flutter as soon as the encoder/muxer is finalised.
+                            // The internal file is complete at this point and the LAN
+                            // transfer server can already serve it.
+                            // saveToPublicStorage copies the file to the device gallery;
+                            // it runs after result.success so it never delays the Dart
+                            // caller (which is the primary source of perceived stop latency).
+                            runOnUiThread { result.success(null) }
                             if (savedPath != null) {
                                 try {
                                     saveToPublicStorage(savedPath, File(savedPath).name)
@@ -178,7 +229,6 @@ class MainActivity : FlutterActivity() {
                                     Log.e(tag, "saveToPublicStorage failed: ${e.message}", e)
                                 }
                             }
-                            runOnUiThread { result.success(null) }
                         }
                     }
                     "saveToPublicStorage" -> {

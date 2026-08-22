@@ -13,6 +13,7 @@ typedef ConnectionStateEvent = ({
   webrtc.RTCPeerConnectionState state
 });
 typedef RemoteStreamEvent = ({String peerId, webrtc.MediaStream stream});
+typedef DataChannelMessageEvent = ({String peerId, String message});
 
 class WebRtcService {
   // No STUN/TURN → LAN host candidates only; unified-plan required for addTrack API.
@@ -22,6 +23,7 @@ class WebRtcService {
   };
 
   final _connections = <String, webrtc.RTCPeerConnection>{};
+  final _dataChannels = <String, webrtc.RTCDataChannel>{};
 
   final _iceCandidateCtrl =
       StreamController<IceCandidateEvent>.broadcast();
@@ -29,6 +31,8 @@ class WebRtcService {
       StreamController<ConnectionStateEvent>.broadcast();
   final _remoteStreamCtrl =
       StreamController<RemoteStreamEvent>.broadcast();
+  final _dataChannelMessageCtrl =
+      StreamController<DataChannelMessageEvent>.broadcast();
 
   Stream<IceCandidateEvent> get iceCandidateStream =>
       _iceCandidateCtrl.stream;
@@ -36,6 +40,8 @@ class WebRtcService {
       _connectionStateCtrl.stream;
   Stream<RemoteStreamEvent> get remoteStreamStream =>
       _remoteStreamCtrl.stream;
+  Stream<DataChannelMessageEvent> get dataChannelMessageStream =>
+      _dataChannelMessageCtrl.stream;
 
   Future<webrtc.RTCPeerConnection> _getOrCreate(String peerId) async {
     if (_connections.containsKey(peerId)) return _connections[peerId]!;
@@ -67,6 +73,14 @@ class WebRtcService {
       }
     };
 
+    // Camera (answerer) side: admin opens the data channel, camera receives it here.
+    pc.onDataChannel = (dc) {
+      _dataChannels[peerId] = dc;
+      dc.onMessage = (msg) => _dataChannelMessageCtrl.add(
+            (peerId: peerId, message: msg.text),
+          );
+    };
+
     _connections[peerId] = pc;
     return pc;
   }
@@ -74,9 +88,32 @@ class WebRtcService {
   // Admin calls this to initiate the connection for a given camera peerId.
   Future<webrtc.RTCSessionDescription> createOffer(String peerId) async {
     final pc = await _getOrCreate(peerId);
+    // Open the data channel before createOffer so it appears in the SDP.
+    await _openDataChannel(peerId, pc);
     final offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     return offer;
+  }
+
+  Future<void> _openDataChannel(
+      String peerId, webrtc.RTCPeerConnection pc) async {
+    final init = webrtc.RTCDataChannelInit()..ordered = true;
+    final dc = await pc.createDataChannel('commands', init);
+    _dataChannels[peerId] = dc;
+    dc.onMessage = (msg) => _dataChannelMessageCtrl.add(
+          (peerId: peerId, message: msg.text),
+        );
+  }
+
+  /// Sends [message] to the named peer via the LAN data channel.
+  /// Silently no-ops if the channel is not yet open (Firestore fallback handles it).
+  Future<void> sendToDataChannel(String peerId, String message) async {
+    final dc = _dataChannels[peerId];
+    if (dc == null ||
+        dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      return;
+    }
+    await dc.send(webrtc.RTCDataChannelMessage(message));
   }
 
   // Camera calls this after receiving the admin's offer.
@@ -168,6 +205,7 @@ class WebRtcService {
   }
 
   Future<void> closeConnection(String peerId) async {
+    _dataChannels.remove(peerId)?.close();
     final pc = _connections.remove(peerId);
     if (pc == null) return;
     await pc.close();
@@ -184,6 +222,10 @@ class WebRtcService {
       c.candidate?.contains('typ host') ?? false;
 
   Future<void> dispose() async {
+    for (final dc in _dataChannels.values) {
+      dc.close();
+    }
+    _dataChannels.clear();
     for (final pc in _connections.values) {
       await pc.close();
     }
@@ -191,5 +233,6 @@ class WebRtcService {
     await _iceCandidateCtrl.close();
     await _connectionStateCtrl.close();
     await _remoteStreamCtrl.close();
+    await _dataChannelMessageCtrl.close();
   }
 }

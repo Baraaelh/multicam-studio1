@@ -1,9 +1,11 @@
+import 'dart:developer' as dev;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
 
 abstract interface class ClockRemoteDataSource {
-  Future<void> addCommand(String sessionId, Map<String, dynamic> data);
+  Future<String> addCommand(String sessionId, Map<String, dynamic> data);
   Stream<Map<String, dynamic>> watchCommands(String sessionId, {DateTime? issuedAfter});
 }
 
@@ -19,8 +21,17 @@ class FirebaseClockDataSource implements ClockRemoteDataSource {
           .collection(FirestoreConstants.commands);
 
   @override
-  Future<void> addCommand(String sessionId, Map<String, dynamic> data) =>
-      _commandsCol(sessionId).add(data);
+  Future<String> addCommand(String sessionId, Map<String, dynamic> data) {
+    // .doc() generates the ID client-side with no network call.
+    // The actual Firestore write runs in the background so callers get the ID
+    // instantly and can dispatch the LAN fast-path without waiting ~300 ms for
+    // a server round-trip. The write still completes for Firestore fallback delivery.
+    final ref = _commandsCol(sessionId).doc();
+    ref.set(data).catchError(
+      (Object e) => dev.log('addCommand write failed: $e', name: 'ClockDataSource'),
+    );
+    return Future.value(ref.id);
+  }
 
   @override
   Stream<Map<String, dynamic>> watchCommands(

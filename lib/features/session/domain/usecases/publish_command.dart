@@ -20,21 +20,21 @@ class PublishCommandParams {
   });
 }
 
-class PublishCommand implements UseCase<void, PublishCommandParams> {
+class PublishCommand implements UseCase<String, PublishCommandParams> {
   final ClockRepository _repository;
   const PublishCommand(this._repository);
 
   @override
-  Future<Result<void>> call(PublishCommandParams params) async {
+  Future<Result<String>> call(PublishCommandParams params) async {
     try {
-      await _repository.addCommand(
+      final id = await _repository.addCommand(
         params.sessionId,
         params.type,
         params.bufferMs,
         targetPeerId: params.targetPeerId,
         payload: params.payload,
       );
-      return const Success(null);
+      return Success(id);
     } catch (e) {
       return Failure(SignalingFailure('Failed to publish command: $e'));
     }

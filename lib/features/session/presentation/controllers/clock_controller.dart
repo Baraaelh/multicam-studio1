@@ -57,25 +57,32 @@ class ClockController extends GetxController {
     isSyncing.value = false;
   }
 
-  /// Issues a timed command to all cameras in the session.
-  /// [bufferMs] gives cameras time to receive and schedule the command
-  /// before the execution timestamp arrives.
-  Future<void> issueCommand(
+  /// Issues a timed command to all cameras in the session via Firestore.
+  /// Returns the Firestore document ID so the LAN fast-path can share the
+  /// same ID for deduplication on the camera side.
+  Future<String?> issueCommand(
     String sessionId,
     CommandType type, {
     int bufferMs = 3000,
     String? targetPeerId,
     Map<String, dynamic>? payload,
-  }) =>
-      _publishCommand(
-        PublishCommandParams(
-          sessionId: sessionId,
-          type: type,
-          bufferMs: bufferMs,
-          targetPeerId: targetPeerId,
-          payload: payload,
-        ),
-      );
+  }) async {
+    final result = await _publishCommand(
+      PublishCommandParams(
+        sessionId: sessionId,
+        type: type,
+        bufferMs: bufferMs,
+        targetPeerId: targetPeerId,
+        payload: payload,
+      ),
+    );
+    return result.valueOrNull;
+  }
+
+  /// Schedules a command that arrived via the LAN data channel fast-path.
+  /// Uses the same deduplication set as Firestore commands so whichever
+  /// path delivers first wins and the duplicate is silently dropped.
+  void scheduleFromLan(SyncCommand cmd) => _scheduleCommand(cmd);
 
   /// Camera: subscribes to commands for this session and schedules them.
   /// Uses the current server-equivalent time as a cutoff so historical commands

@@ -10,18 +10,6 @@ class SplashPage extends StatefulWidget {
 
 class _SplashPageState extends State<SplashPage> {
   @override
-  void initState() {
-    super.initState();
-
-    // Navigate to mode selection after splash duration
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        Get.offAllNamed('/');
-      }
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E17),
@@ -52,7 +40,10 @@ class _SplashPageState extends State<SplashPage> {
             ),
             const SizedBox(height: 56),
             FilledButton(
-              onPressed: () => Get.offAllNamed('/'),
+              onPressed: () {
+                // Navigate to mode select on button press
+                Get.offAllNamed('/');
+              },
               child: const Text('Start'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(220, 52),

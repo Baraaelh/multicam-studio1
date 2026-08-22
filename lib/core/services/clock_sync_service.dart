@@ -35,7 +35,7 @@ class ClockSyncService {
   /// Uses 3 rounds by default (down from 5) to reduce Firestore round-trips
   /// and improve startup latency. The median of 3 samples is still robust
   /// against outliers.
-  Future<void> measure({int rounds = 3}) async {
+  Future<void> measure({int rounds = 1}) async {
     final offsets = <int>[];
     final col = _firestore.collection('_clock_probes');
     for (var i = 0; i < rounds; i++) {

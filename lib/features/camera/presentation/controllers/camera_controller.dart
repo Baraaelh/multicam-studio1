@@ -1,4 +1,5 @@
-import 'dart:async' show unawaited;
+import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as dev;
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
@@ -81,6 +82,7 @@ class CameraController extends GetxController {
   webrtc.MediaStream? _localStream;
   QrPayload? _payload;
   Worker? _commandWorker;
+  StreamSubscription<dynamic>? _lanSub;
   String? _expectedPin;
 
   @override
@@ -126,11 +128,39 @@ class CameraController extends GetxController {
       status: CameraStatus.requestingPermission,
     );
 
-    // 1. Request permissions + open camera (getUserMedia).
-    final captureResult = await _startCapture(
-      StartCaptureParams(lens: LensDirection.back),
+    // Start signaling FIRST — subscribe to Firestore for the Admin's offer
+    // immediately, before the camera even opens. This way the camera is ready
+    // to receive the offer as soon as the Admin sends it, instead of waiting
+    // for the camera to open first.
+    final joinFuture = _signalingController.joinSession(
+      payload.sessionId,
+      payload.peerId,
+      payload.label,
     );
 
+    // Kick off all other independent operations in parallel: camera open,
+    // services, clock sync, device registration, and command watching all
+    // run at the same time instead of serially.
+    final captureFuture = _startCapture(
+      StartCaptureParams(lens: LensDirection.back),
+    );
+    final servicesFuture = Future.wait([
+      _servicePlatform.start(),
+      _transferServer.start(),
+    ]);
+    final clockFuture = _clockController.sync();
+    final registerFuture = _registerDevice(
+      RegisterDeviceParams(
+        sessionId: payload.sessionId,
+        peerId: payload.peerId,
+      ),
+    );
+    _clockController.startWatchingCommands(payload.sessionId);
+    _commandWorker = ever(_clockController.pendingCommand, _onCommand);
+    _lanSub = _webRtcService.dataChannelMessageStream.listen(_onLanCommand);
+
+    // 1. Await camera open (this is the long pole).
+    final captureResult = await captureFuture;
     if (captureResult.isFailure) {
       cameraState.value = LocalCameraState(
         status: CameraStatus.error,
@@ -139,12 +169,12 @@ class CameraController extends GetxController {
       return;
     }
 
-    // 2. Permissions granted — start foreground service + LAN transfer server.
+    // 2. Services were already kicked off — just await them.
     cameraState.value = const LocalCameraState(status: CameraStatus.starting);
-    await Future.wait([
-      _servicePlatform.start(),
-      _transferServer.start(),
-    ]);
+    await servicesFuture;
+    // Pre-resolve the documents directory so it's cached before any recording
+    // command arrives. This removes an IO call from the timing-critical path.
+    unawaited(_recordingService.warmUp());
 
     // 3. Wire up local renderer for preview.
     _localStream = captureResult.valueOrNull!;
@@ -154,33 +184,40 @@ class CameraController extends GetxController {
       lens: LensDirection.back,
     );
 
-    // 4. Pre-add tracks BEFORE joinSession so the SDP answer includes the
-    //    camera's audio/video m-lines.
+    // 4. Pre-add tracks BEFORE the SDP answer is created so the answer
+    //    includes the camera's audio/video m-lines.
     await _webRtcService.prepareForIncomingCall(payload.peerId, _localStream!);
 
-    // 5. Sync clock with Firebase server time before watching commands.
-    unawaited(_clockController.sync());
+    // 5. Ensure the Firestore signaling subscription is active.
+    await joinFuture;
 
-    // 6. Start signaling — watch for Admin's offer.
-    await _signalingController.joinSession(
-      payload.sessionId,
-      payload.peerId,
-      payload.label,
-    );
+    // 6. Background tasks (clock sync + device registration) are already
+    //    running; await so failures surface to the caller.
+    await Future.wait([clockFuture, registerFuture]);
+  }
 
-    // 7. Register device model with Firestore so Admin sees actual hardware name.
-    unawaited(
-      _registerDevice(
-        RegisterDeviceParams(
-          sessionId: payload.sessionId,
-          peerId: payload.peerId,
-        ),
-      ),
-    );
-
-    // 8. Start watching for Admin commands (record start/stop).
-    _clockController.startWatchingCommands(payload.sessionId);
-    _commandWorker = ever(_clockController.pendingCommand, _onCommand);
+  void _onLanCommand(({String peerId, String message}) event) {
+    try {
+      final data = jsonDecode(event.message) as Map<String, dynamic>;
+      final type = CommandType.tryFromString(data['type'] as String? ?? '');
+      if (type == null) return;
+      final targetPeerId = data['targetPeerId'] as String?;
+      if (targetPeerId != null && targetPeerId != _payload?.peerId) return;
+      final executeAtMs = (data['executeAtMs'] as num).toInt();
+      // Represent the pre-computed server executeAt as issuedAt with bufferMs=0
+      // so ClockController.scheduleFromLan feeds it straight into serverToLocal.
+      final cmd = SyncCommand(
+        id: data['commandId'] as String,
+        type: type,
+        issuedAt: DateTime.fromMillisecondsSinceEpoch(executeAtMs),
+        bufferMs: 0,
+        targetPeerId: targetPeerId,
+        payload: (data['payload'] as Map?)?.cast<String, dynamic>(),
+      );
+      _clockController.scheduleFromLan(cmd);
+    } catch (e) {
+      dev.log('_onLanCommand parse error: $e', name: 'CameraController');
+    }
   }
 
   void _onCommand(SyncCommand? cmd) {
@@ -297,15 +334,15 @@ class CameraController extends GetxController {
 
     // Use the profile selected by the Admin when available. The Admin sends
     // the selected profile in the startRecording command payload. If no
-    // profile was provided, fall back to a lower resolution to avoid
-    // double-encoding bottleneck — the Admin records the full-quality remote
-    // WebRTC stream for the final merge, and the camera's local file is only
-    // used as a fallback source in the merge pipeline.
+    // profile was provided, fall back to 1280×720@30fps for optimal quality
+    // and recording speed. The local recording serves as a fallback source in
+    // the merge pipeline — the Admin records the primary full-quality remote
+    // WebRTC stream for the final merge.
     final localProfile = profile ??
         const RecordingProfile(
-          width: 640,
-          height: 480,
-          frameRate: 15,
+          width: 1280,
+          height: 720,
+          frameRate: 30,
           codec: 'H264',
         );
 
@@ -414,6 +451,8 @@ class CameraController extends GetxController {
 
     _commandWorker?.dispose();
     _commandWorker = null;
+    _lanSub?.cancel();
+    _lanSub = null;
     _clockController.stopWatchingCommands();
 
     isPaused.value = false;
