@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../controllers/admin_controller.dart';
-import 'admin_live_page.dart';
 
 class AdminSetupPage extends GetView<AdminController> {
   const AdminSetupPage({super.key});
@@ -176,7 +175,7 @@ class _BottomActions extends StatelessWidget {
                 onPressed: (s != null && !isStarting)
                     ? () async {
                         await controller.startSession();
-                        Get.to<void>(() => const AdminLivePage());
+                        Get.toNamed<void>('/admin/live');
                       }
                     : null,
                 icon: isStarting
