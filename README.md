@@ -112,6 +112,21 @@ Every device signs in with **Firebase Anonymous Auth** at startup. Nothing is as
 
 **Setup:** enable **Anonymous** under Firebase Console → Authentication → Sign-in method.
 
+### App Check
+
+The API key in `firebase_options.dart` is public, so on its own it lets any script use the project. **Firebase App Check** makes Firestore and Auth accept only requests from this app.
+
+- **Release builds from Google Play** use **Play Integrity**. Register the app's SHA-256 fingerprint in Firebase Project settings, then in Firebase Console → App Check → Apps register the Android app with Play Integrity.
+- **Debug builds** and **release builds installed directly (shared APK)** use the **debug provider**. Play Integrity rejects apps that weren't installed from Play. Build releases for direct install with:
+
+  ```bash
+  flutter build apk --dart-define=APP_CHECK_DEBUG=true
+  ```
+
+  On first launch each device logs a debug token (`adb logcat | grep DebugAppCheckProvider`). Add it under App Check → Apps → Manage debug tokens.
+
+**Rollout:** ship the build, check App Check → Metrics until the requests show as *verified*, then click **Enforce** for Cloud Firestore and Authentication. Before enforcement nothing is blocked; after it, unverified requests are rejected.
+
 Test the rules against the emulator, then deploy:
 
 ```bash

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'app.dart';
 import 'core/di/injection.dart';
+import 'core/services/app_check_service.dart';
 import 'core/services/auth_service.dart';
 import 'core/services/ffmpeg_service.dart';
 import 'features/admin/presentation/services/render_service.dart';
@@ -16,6 +17,8 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  // Before any other Firebase call, so every request carries a token.
+  await activateAppCheck();
 
   configureDependencies();
   // Every Firestore request needs a signed-in device. Failing here (e.g.

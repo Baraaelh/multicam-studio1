@@ -19,6 +19,8 @@ dependencies:
   cloud_firestore: ^5.4.4
   # Anonymous sign-in: gives each device a stable UID for security rules
   firebase_auth: ^5.5.0
+  # App Check: only the genuine app may reach Firestore/Auth
+  firebase_app_check: ^0.3.2
 
   # State management & DI
   get: ^4.6.6
