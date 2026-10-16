@@ -927,6 +927,16 @@ class _AudioSourceSection extends StatelessWidget {
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
           const SizedBox(height: 12),
+          // Each cut keeps the audio of the camera on screen
+          _AudioSourceTile(
+            icon: Icons.switch_video,
+            label: 'Audio Follows Video',
+            subtitle: 'All cameras record audio; each cut uses the on-screen camera',
+            isSelected: selectedId == AdminController.followVideoSourceId,
+            isLocked: isLocked,
+            onTap: () => controller.masterAudioCameraId.value =
+                AdminController.followVideoSourceId,
+          ),
           // Studio Audio Mode — this device's mic (or a connected mic)
           _AudioSourceTile(
             icon: Icons.settings_voice,
