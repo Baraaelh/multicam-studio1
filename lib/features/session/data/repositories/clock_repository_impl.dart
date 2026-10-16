@@ -17,11 +17,13 @@ class ClockRepositoryImpl implements ClockRepository {
     int bufferMs, {
     String? targetPeerId,
     Map<String, dynamic>? payload,
+    int? executeAtMs,
   }) =>
       _dataSource.addCommand(sessionId, {
         FirestoreConstants.commandType: type.name,
         FirestoreConstants.issuedAt: FieldValue.serverTimestamp(),
         FirestoreConstants.bufferMs: bufferMs,
+        FirestoreConstants.executeAtMs: ?executeAtMs,
         'targetPeerId': targetPeerId,
         'payload': payload,
       });
@@ -33,14 +35,21 @@ class ClockRepositoryImpl implements ClockRepository {
           data[FirestoreConstants.commandType] as String? ?? '',
         );
         if (type == null) return <SyncCommand>[];
+        // An explicit executeAtMs (server-equivalent) pins the execution
+        // instant so the Firestore and LAN paths fire at exactly the same time.
+        // Represented as issuedAt + bufferMs=0, matching the LAN path.
+        final executeAtMs =
+            (data[FirestoreConstants.executeAtMs] as num?)?.toInt();
         return [
           SyncCommand(
             id: data['id'] as String,
             type: type,
-            issuedAt:
-                (data[FirestoreConstants.issuedAt] as Timestamp).toDate(),
-            bufferMs:
-                (data[FirestoreConstants.bufferMs] as num).toInt(),
+            issuedAt: executeAtMs != null
+                ? DateTime.fromMillisecondsSinceEpoch(executeAtMs)
+                : (data[FirestoreConstants.issuedAt] as Timestamp).toDate(),
+            bufferMs: executeAtMs != null
+                ? 0
+                : (data[FirestoreConstants.bufferMs] as num).toInt(),
             targetPeerId: data['targetPeerId'] as String?,
             payload: (data['payload'] as Map?)?.cast<String, dynamic>(),
           ),

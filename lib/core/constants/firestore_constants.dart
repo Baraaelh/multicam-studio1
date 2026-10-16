@@ -32,6 +32,7 @@ abstract final class FirestoreConstants {
   static const String commandType = 'type';
   static const String issuedAt = 'issuedAt';
   static const String bufferMs = 'bufferMs';
+  static const String executeAtMs = 'executeAtMs';
 
   // Recording subcollection + fields
   static const String recordings = 'recordings';

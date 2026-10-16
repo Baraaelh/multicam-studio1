@@ -10,6 +10,9 @@ class PublishCommandParams {
   final int bufferMs;
   final String? targetPeerId;
   final Map<String, dynamic>? payload;
+  /// Explicit server-equivalent execution time (ms since epoch). When set,
+  /// cameras execute at exactly this instant instead of issuedAt + bufferMs.
+  final int? executeAtMs;
 
   const PublishCommandParams({
     required this.sessionId,
@@ -17,6 +20,7 @@ class PublishCommandParams {
     this.bufferMs = 3000,
     this.targetPeerId,
     this.payload,
+    this.executeAtMs,
   });
 }
 
@@ -33,6 +37,7 @@ class PublishCommand implements UseCase<String, PublishCommandParams> {
         params.bufferMs,
         targetPeerId: params.targetPeerId,
         payload: params.payload,
+        executeAtMs: params.executeAtMs,
       );
       return Success(id);
     } catch (e) {

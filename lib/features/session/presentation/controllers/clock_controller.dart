@@ -66,6 +66,7 @@ class ClockController extends GetxController {
     int bufferMs = 3000,
     String? targetPeerId,
     Map<String, dynamic>? payload,
+    int? executeAtMs,
   }) async {
     final result = await _publishCommand(
       PublishCommandParams(
@@ -74,10 +75,15 @@ class ClockController extends GetxController {
         bufferMs: bufferMs,
         targetPeerId: targetPeerId,
         payload: payload,
+        executeAtMs: executeAtMs,
       ),
     );
     return result.valueOrNull;
   }
+
+  /// Converts a local [DateTime] on this device to server-equivalent ms.
+  int localToServerMs(DateTime local) =>
+      local.millisecondsSinceEpoch - _clockSyncService.offsetMs;
 
   /// Schedules a command that arrived via the LAN data channel fast-path.
   /// Uses the same deduplication set as Firestore commands so whichever
