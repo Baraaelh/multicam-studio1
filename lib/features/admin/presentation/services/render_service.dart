@@ -31,6 +31,7 @@ class RenderService extends GetxService {
       : _ffmpegService = ffmpegService;
 
   final isRendering = false.obs;
+  final isCancelling = false.obs;
   final renderProgress = 0.0.obs;
   final outputPath = Rx<String?>(null);
   final errorMessage = Rx<String?>(null);
@@ -120,6 +121,8 @@ class RenderService extends GetxService {
 
     final capturedAdminAudioPath = _adminAudioPath;
     final capturedSources = List<RenderSource>.from(sources);
+    // Only a finished render may delete its sources — never a cancelled one.
+    var completed = false;
 
     await _ffmpegService.renderGrid(
       inputPaths: paths,
@@ -133,8 +136,10 @@ class RenderService extends GetxService {
           'startRender COMPLETE — sizeBytes=$size path=$path',
           name: _tag,
         );
+        completed = true;
         outputPath.value = path;
         isRendering.value = false;
+        isCancelling.value = false;
         renderProgress.value = 1.0;
         unawaited(_ffmpegService.saveToPublicStorage(path, path.split('/').last));
       },
@@ -142,10 +147,19 @@ class RenderService extends GetxService {
         dev.log('startRender FAILED — $err', name: _tag);
         errorMessage.value = err;
         isRendering.value = false;
+        isCancelling.value = false;
+      },
+      onCancelled: () {
+        // Back to the ready state with sources intact, so the user can
+        // render again.
+        dev.log('startRender CANCELLED', name: _tag);
+        isRendering.value = false;
+        isCancelling.value = false;
+        renderProgress.value = 0;
       },
     );
 
-    if (errorMessage.value == null) {
+    if (completed) {
       _deleteSourceFiles(capturedSources, capturedAdminAudioPath);
     }
   }
@@ -175,9 +189,11 @@ class RenderService extends GetxService {
     }
   }
 
+  /// Requests cancellation. [isRendering] stays true until the native render
+  /// actually stops; startRender's callbacks then reset the state.
   Future<void> cancelRender() async {
+    if (!isRendering.value || isCancelling.value) return;
+    isCancelling.value = true;
     await _ffmpegService.cancel();
-    isRendering.value = false;
-    renderProgress.value = 0;
   }
 }

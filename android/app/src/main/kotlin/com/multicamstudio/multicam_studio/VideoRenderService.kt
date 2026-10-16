@@ -8,10 +8,33 @@ import android.media.MediaMuxer
 import android.util.Log
 import java.nio.ByteBuffer
 
+/** Thrown from inside a merge loop when [VideoRenderService.requestCancel] was called. */
+class RenderCancelledException : RuntimeException("Render cancelled")
+
 object VideoRenderService {
 
     private const val TAG = "VideoRenderService"
     private const val MAX_SAMPLE_SIZE = 2 * 1024 * 1024 // 2 MB per sample
+
+    // Set from the main thread, read on the render thread between samples.
+    @Volatile
+    private var cancelRequested = false
+
+    val isCancelRequested: Boolean get() = cancelRequested
+
+    /** Call before starting a render so a stale cancel doesn't abort it. */
+    fun resetCancel() {
+        cancelRequested = false
+    }
+
+    /** Asks the running merge to stop at the next sample. */
+    fun requestCancel() {
+        cancelRequested = true
+    }
+
+    private fun checkCancelled() {
+        if (cancelRequested) throw RenderCancelledException()
+    }
 
     /**
      * Appends [inputs] one after another into a single MP4 at [output].
@@ -66,6 +89,7 @@ object VideoRenderService {
                     var maxAudioUs = 0L
 
                     while (true) {
+                        checkCancelled()
                         buffer.clear()
                         val sampleSize = ext.readSampleData(buffer, 0)
                         if (sampleSize < 0) break
@@ -356,6 +380,7 @@ object VideoRenderService {
                     var firstSampleWritten = false
 
                     while (true) {
+                        checkCancelled()
                         buffer.clear()
                         val sampleSize = ext.readSampleData(buffer, 0)
                         if (sampleSize < 0) break
@@ -416,6 +441,7 @@ object VideoRenderService {
                         var maxAdminUs = adminActualStartUs
 
                         while (true) {
+                            checkCancelled()
                             buffer.clear()
                             val sampleSize = adminAudioExt.readSampleData(buffer, 0)
                             if (sampleSize < 0) break

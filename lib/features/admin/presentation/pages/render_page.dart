@@ -52,6 +52,7 @@ class RenderPage extends StatelessWidget {
                 return _RenderingView(
                   sourceCount: srcs.length,
                   hasTimeline: hasTimeline,
+                  isCancelling: service.isCancelling.value,
                   onCancel: service.cancelRender,
                 );
               }
@@ -174,11 +175,13 @@ class _ReadyView extends StatelessWidget {
 class _RenderingView extends StatelessWidget {
   final int sourceCount;
   final bool hasTimeline;
+  final bool isCancelling;
   final VoidCallback onCancel;
 
   const _RenderingView({
     required this.sourceCount,
     required this.hasTimeline,
+    required this.isCancelling,
     required this.onCancel,
   });
 
@@ -189,8 +192,8 @@ class _RenderingView extends StatelessWidget {
       children: [
         const Icon(Icons.movie_creation, size: 56, color: Colors.deepPurpleAccent),
         const SizedBox(height: 24),
-        const Text(
-          'Rendering…',
+        Text(
+          isCancelling ? 'Cancelling…' : 'Rendering…',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 6),
@@ -216,9 +219,9 @@ class _RenderingView extends StatelessWidget {
         ),
         const SizedBox(height: 40),
         OutlinedButton.icon(
-          onPressed: onCancel,
+          onPressed: isCancelling ? null : onCancel,
           icon: const Icon(Icons.close),
-          label: const Text('Cancel'),
+          label: Text(isCancelling ? 'Cancelling…' : 'Cancel'),
           style: OutlinedButton.styleFrom(
             foregroundColor: Colors.white54,
             side: const BorderSide(color: Colors.white24),

@@ -19,6 +19,7 @@ class FfmpegService {
     void Function(double progress)? onProgress,
     void Function(String error)? onError,
     void Function(String outputPath)? onComplete,
+    void Function()? onCancelled,
   }) async {
     onProgress?.call(0.0);
     try {
@@ -31,6 +32,10 @@ class FfmpegService {
       onProgress?.call(1.0);
       onComplete?.call(outputPath);
     } on PlatformException catch (e) {
+      if (e.code == 'RENDER_CANCELLED') {
+        onCancelled?.call();
+        return;
+      }
       onError?.call(e.message ?? 'Render failed');
     } catch (e) {
       onError?.call(e.toString());
@@ -48,11 +53,11 @@ class FfmpegService {
     }
   }
 
+  /// Asks the native merge to stop at the next sample. The pending
+  /// [renderGrid] call then completes through `onCancelled`, after the native
+  /// side has deleted the partial output. If the render finishes first, it
+  /// completes through `onComplete` as usual.
   Future<void> cancel() async {
-    // Native MediaMuxer runs synchronously — cannot be cancelled mid-flight.
-    // We still notify the native side so it can clean up any partial output
-    // file and release resources. The native implementation should handle
-    // this gracefully if a render is in progress.
     try {
       await _channel.invokeMethod<void>('cancelRender');
     } catch (_) {
