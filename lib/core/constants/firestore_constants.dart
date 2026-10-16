@@ -11,6 +11,7 @@ abstract final class FirestoreConstants {
   static const String adminId = 'adminId';
   static const String code = 'code';
   static const String createdAt = 'createdAt';
+  static const String expiresAt = 'expiresAt';
 
   // Peer document fields
   static const String offer = 'offer';

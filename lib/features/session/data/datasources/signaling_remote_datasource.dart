@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
+import '../../../../core/constants/session_code_policy.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../session/domain/entities/recording_profile.dart';
 
@@ -206,8 +207,17 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
           .collection(FirestoreConstants.sessionCodes)
           .doc(code)
           .get();
-      if (!doc.exists) return null;
-      return doc.data()?['sessionId']?.toString();
+      // An expired code may belong to an abandoned session, or be about to be
+      // reused by a new one — never join through it.
+      if (!doc.exists || isSessionCodeExpired(doc.data())) return null;
+      final sessionId = doc.data()?['sessionId']?.toString();
+      if (sessionId == null) return null;
+      final session = await _firestore
+          .collection(FirestoreConstants.sessions)
+          .doc(sessionId)
+          .get();
+      if (session.data()?[FirestoreConstants.status] == 'ended') return null;
+      return sessionId;
     } on FirebaseException catch (e) {
       throw FirestoreException(e.message ?? 'Firestore error');
     }

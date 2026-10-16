@@ -6,22 +6,26 @@ import '../repositories/session_repository.dart';
 
 class CreateSessionParams {
   final String adminId;
-  final String code;
-  const CreateSessionParams({required this.adminId, required this.code});
+  /// Draws a candidate code; called again if the code is already taken.
+  final String Function() nextCode;
+  const CreateSessionParams({required this.adminId, required this.nextCode});
 }
 
-class CreateSession implements UseCase<String, CreateSessionParams> {
+class CreateSession
+    implements UseCase<({String sessionId, String code}), CreateSessionParams> {
   final SessionRepository _repository;
   const CreateSession(this._repository);
 
   @override
-  Future<Result<String>> call(CreateSessionParams params) async {
+  Future<Result<({String sessionId, String code})>> call(
+    CreateSessionParams params,
+  ) async {
     try {
-      final id = await _repository.createSession(
+      final created = await _repository.createSession(
         adminId: params.adminId,
-        code: params.code,
+        nextCode: params.nextCode,
       );
-      return Success(id);
+      return Success(created);
     } on FirestoreException catch (e) {
       return Failure(FirestoreFailure(e.message));
     } catch (e) {

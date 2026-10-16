@@ -2,7 +2,6 @@ import '../../../../core/error/exceptions.dart';
 import '../../../../core/error/failures.dart';
 import '../../../../core/error/result.dart';
 import '../../../../core/usecases/use_case.dart';
-import '../entities/session.dart';
 import '../repositories/session_repository.dart';
 
 class EndSessionParams {
@@ -17,7 +16,7 @@ class EndSession implements UseCase<void, EndSessionParams> {
   @override
   Future<Result<void>> call(EndSessionParams params) async {
     try {
-      await _repository.updateStatus(params.sessionId, SessionStatus.ended);
+      await _repository.endSession(params.sessionId);
       return const Success(null);
     } on FirestoreException catch (e) {
       return Failure(FirestoreFailure(e.message));
