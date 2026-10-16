@@ -118,6 +118,10 @@ class AdminController extends GetxController {
   DateTime? _recordingStoppedAt;
   // Per-camera actual recording start (differs for late-joining cameras)
   final _cameraRecordingStartAt = <String, DateTime>{};
+  // True once this take has been rendered, so crash recovery skips it.
+  bool _recordingRendered = false;
+  // Serializes Firestore timeline writes (clear, then appends) in order.
+  Future<void> _timelineWrites = Future.value();
 
   // Remote streams
   final _remoteStreams = <String, webrtc.MediaStream>{};
@@ -138,6 +142,7 @@ class AdminController extends GetxController {
   StreamSubscription<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>>? _peerListSub;
   Worker? _peerStatusWorker;
   Worker? _switchWorker;
+  Worker? _renderDoneWorker;
 
   @override
   void onInit() {
@@ -150,6 +155,12 @@ class AdminController extends GetxController {
       _syncPeerStatuses,
     );
     _switchWorker = ever(_clockController.pendingCommand, _onCoAdminCommand);
+    // Covers both the auto-merge and a manual render from the transfer sheet.
+    _renderDoneWorker = ever(Get.find<RenderService>().outputPath, (path) {
+      if (path == null || _recordingStartedAt == null) return;
+      _recordingRendered = true;
+      unawaited(_saveRecordingStateToDisk());
+    });
     unawaited(_tryRecoverFromDisk());
   }
 
@@ -252,13 +263,15 @@ class AdminController extends GetxController {
     final startAt = _commandExecuteAt();
     _recordingStartedAt = startAt;
     _recordingStoppedAt = null;
+    _recordingRendered = false;
     switchHistory.clear();
     _cameraRecordingStartAt.clear();
     _autoMergeStarted = false;
 
-    unawaited(_sessionRepository.initTimeline(s.sessionId).catchError(
-          (Object e) => dev.log('initTimeline failed: $e', name: 'AdminController'),
-        ));
+    // Queued so the clear finishes before any event of this take is written;
+    // otherwise initTimeline's delete pass can remove the new initial event.
+    final sid = s.sessionId;
+    _enqueueTimelineWrite('initTimeline', () => _sessionRepository.initTimeline(sid));
 
     for (final slot in slots) {
       _cameraRecordingStartAt[slot.peerId] = _recordingStartedAt!;
@@ -268,10 +281,12 @@ class AdminController extends GetxController {
     if (initial != null) {
       final event = SwitchEvent(timestamp: _recordingStartedAt!, peerId: initial);
       switchHistory.add(event);
-      unawaited(_sessionRepository.appendSwitchEvent(s.sessionId, event).catchError(
-            (Object e) => dev.log('appendSwitchEvent failed: $e', name: 'AdminController'),
-          ));
+      _enqueueTimelineWrite(
+        'appendSwitchEvent',
+        () => _sessionRepository.appendSwitchEvent(sid, event),
+      );
     }
+    unawaited(_saveRecordingStateToDisk());
 
     final masterCamId = masterAudioCameraId.value;
     final profile = selectedProfile.value;
@@ -298,14 +313,18 @@ class AdminController extends GetxController {
 
     final stopAt = _commandExecuteAt();
     _recordingStoppedAt = stopAt;
+    unawaited(_saveRecordingStateToDisk());
 
     await _issueTimedCommand(s.sessionId, CommandType.stopRecording, stopAt);
     isRecording.value = false;
     _recordingTimer?.cancel();
     _recordingTimer = null;
     recordingSeconds.value = 0;
+    _armAutoDownload();
+  }
 
-    // Arm auto-download: files arrive via Firestore → trigger downloads
+  /// Files arrive via Firestore → trigger downloads, then auto-merge.
+  void _armAutoDownload() {
     _autoDownloadEnabled = true;
     autoDownloading.value = true;
     downloadFailed.clear();
@@ -381,9 +400,10 @@ class AdminController extends GetxController {
       switchHistory.add(event);
       final sid = session.value?.sessionId;
       if (sid != null) {
-        unawaited(_sessionRepository.appendSwitchEvent(sid, event).catchError(
-              (Object e) => dev.log('appendSwitchEvent failed: $e', name: 'AdminController'),
-            ));
+        _enqueueTimelineWrite(
+          'appendSwitchEvent',
+          () => _sessionRepository.appendSwitchEvent(sid, event),
+        );
       }
     }
     _signalingController.switchActiveCamera(peerId);
@@ -773,6 +793,7 @@ class AdminController extends GetxController {
     if (!_isValidSession()) return;
     final startAt = _commandExecuteAt();
     _cameraRecordingStartAt[peerId] = startAt;
+    unawaited(_saveRecordingStateToDisk());
     final masterCamId = masterAudioCameraId.value;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
@@ -875,10 +896,22 @@ class AdminController extends GetxController {
     _recordingSub?.cancel();
     _recordingSub = _watchRecordings(
       WatchRecordingsParams(sessionId: sessionId),
-    ).listen((list) {
+    ).listen((all) {
+      final list = all.where(_isCurrentTake).toList();
       recordings.assignAll(list);
       if (_autoDownloadEnabled) _checkAutoDownload(list);
     });
+  }
+
+  /// The recordings collection keeps every take of the session. Only files
+  /// published after this take started belong to it; without this filter an
+  /// earlier take's file could be downloaded and rendered in its place.
+  bool _isCurrentTake(RecordingInfo info) {
+    final startedAt = _recordingStartedAt;
+    if (startedAt == null) return true;
+    // recordedAt is a server timestamp written when the camera stopped.
+    return info.recordedAt.millisecondsSinceEpoch >=
+        _clockController.localToServerMs(startedAt);
   }
 
   void _watchPeerList(String sessionId) {
@@ -969,6 +1002,40 @@ class AdminController extends GetxController {
     }
   }
 
+  /// Persists the current take's timing next to the session ids, so a crash
+  /// can be recovered with the real start/stop instants. Switch events
+  /// themselves live in Firestore (`timeline`).
+  Future<void> _saveRecordingStateToDisk() async {
+    final s = session.value;
+    final startedAt = _recordingStartedAt;
+    if (s == null || startedAt == null) return;
+    try {
+      final file = await _sessionFile();
+      await file.writeAsString(jsonEncode({
+        'sessionId': s.sessionId,
+        'adminId': s.adminId,
+        'recording': {
+          'startedAtMs': startedAt.millisecondsSinceEpoch,
+          'stoppedAtMs': _recordingStoppedAt?.millisecondsSinceEpoch,
+          'cameraStartAtMs': _cameraRecordingStartAt
+              .map((peerId, t) => MapEntry(peerId, t.millisecondsSinceEpoch)),
+          'masterAudioCameraId': masterAudioCameraId.value,
+          'rendered': _recordingRendered,
+        },
+      }));
+    } catch (e) {
+      dev.log('_saveRecordingStateToDisk failed: $e', name: 'AdminController');
+    }
+  }
+
+  void _enqueueTimelineWrite(String label, Future<void> Function() write) {
+    _timelineWrites = _timelineWrites.then((_) => write()).catchError(
+          (Object e) => dev.log('$label failed: $e', name: 'AdminController'),
+        );
+  }
+
+  /// Restores a take that was interrupted by an admin crash and finishes it:
+  /// downloads the camera files and renders them along the saved timeline.
   Future<void> _tryRecoverFromDisk() async {
     try {
       final file = await _sessionFile();
@@ -977,10 +1044,13 @@ class AdminController extends GetxController {
       final map = jsonDecode(raw) as Map<String, dynamic>;
       final sessionId = map['sessionId'] as String?;
       final adminId = map['adminId'] as String?;
-      if (sessionId == null || adminId == null) return;
+      final rec = map['recording'] as Map<String, dynamic>?;
+      if (sessionId == null || adminId == null || rec == null) return;
+      if (rec['rendered'] == true) return;
+      final startedAtMs = (rec['startedAtMs'] as num?)?.toInt();
+      if (startedAtMs == null) return;
 
       final events = await _sessionRepository.fetchTimeline(sessionId);
-      if (events.isEmpty) return;
 
       session.value = Session(
         sessionId: sessionId,
@@ -989,12 +1059,41 @@ class AdminController extends GetxController {
       );
       _adminId = adminId;
       switchHistory.assignAll(events);
-      _recordingStartedAt = events.first.timestamp;
-      // Restore the stop time so buildRenderSegments can produce a valid
-      // timeline after crash recovery. Without this, segments are always empty.
-      _recordingStoppedAt = DateTime.now();
+      _recordingStartedAt = DateTime.fromMillisecondsSinceEpoch(startedAtMs);
+      _cameraRecordingStartAt
+        ..clear()
+        ..addAll(
+          ((rec['cameraStartAtMs'] as Map<String, dynamic>?) ?? {}).map(
+            (peerId, ms) => MapEntry(
+              peerId,
+              DateTime.fromMillisecondsSinceEpoch((ms as num).toInt()),
+            ),
+          ),
+        );
+      masterAudioCameraId.value = rec['masterAudioCameraId'] as String?;
+      _autoMergeStarted = false;
 
-      dev.log('Recovered session $sessionId with ${events.length} timeline events', name: 'AdminController');
+      // Needed for the stop command and for telling this take's recordings
+      // from earlier ones.
+      await _clockController.sync();
+
+      final stoppedAtMs = (rec['stoppedAtMs'] as num?)?.toInt();
+      if (stoppedAtMs != null) {
+        _recordingStoppedAt = DateTime.fromMillisecondsSinceEpoch(stoppedAtMs);
+        _armAutoDownload();
+      } else {
+        // Crashed mid-take: the cameras are still recording, but this admin
+        // lost its live connections and has no running take to stop from the
+        // UI. Stop them now so the footage is saved, downloaded and rendered.
+        await issueStopRecording();
+      }
+      _watchRecordingsFor(sessionId);
+
+      dev.log(
+        'Recovered session $sessionId: ${events.length} timeline event(s), '
+        '${stoppedAtMs != null ? 'take already stopped' : 'stopped the running take'}',
+        name: 'AdminController',
+      );
     } catch (e) {
       dev.log('_tryRecoverFromDisk failed: $e', name: 'AdminController');
     }
@@ -1005,6 +1104,7 @@ class AdminController extends GetxController {
     _remoteStreamSub?.cancel();
     _peerStatusWorker?.dispose();
     _switchWorker?.dispose();
+    _renderDoneWorker?.dispose();
     _recordingSub?.cancel();
     _peerListSub?.cancel();
     _recordingTimer?.cancel();
