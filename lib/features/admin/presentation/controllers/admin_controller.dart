@@ -204,19 +204,18 @@ class AdminController extends GetxController {
   // ---------------------------------------------------------------------------
 
   Future<void> createSession() async {
-    final code = _generateSessionCode();
     final result = await _createSession(
-      CreateSessionParams(adminId: _adminId, code: code),
+      CreateSessionParams(adminId: _adminId, nextCode: _generateSessionCode),
     );
     result.fold(
-      onSuccess: (id) {
+      onSuccess: (created) {
         session.value = Session(
-          sessionId: id,
+          sessionId: created.sessionId,
           adminId: _adminId,
           status: SessionStatus.waiting,
         );
-        sessionCode.value = code;
-        unawaited(_saveSessionToDisk(id, _adminId));
+        sessionCode.value = created.code;
+        unawaited(_saveSessionToDisk(created.sessionId, _adminId));
       },
       onFailure: (f) => Get.snackbar(
         'Error',

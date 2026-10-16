@@ -1,12 +1,21 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
+import '../../../../core/constants/session_code_policy.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../session/domain/entities/switch_event.dart';
 
 abstract interface class SessionRemoteDataSource {
-  Future<String> createSession({required String adminId, required String code});
+  /// Creates a session under a code from [nextCode] that no live session
+  /// holds, retrying with a new code on collision.
+  Future<({String sessionId, String code})> createSession({
+    required String adminId,
+    required String Function() nextCode,
+  });
   Future<void> updateStatus(String sessionId, String status);
+
+  /// Marks the session ended and frees its code for reuse.
+  Future<void> endSession(String sessionId);
   Future<void> initTimeline(String sessionId);
   Future<void> appendSwitchEvent(String sessionId, SwitchEvent event);
   Future<List<SwitchEvent>> fetchTimeline(String sessionId);
@@ -17,28 +26,73 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
   const FirebaseSessionDataSource({required FirebaseFirestore firestore})
       : _firestore = firestore;
 
+  static const _maxCodeAttempts = 5;
+
   @override
-  Future<String> createSession({
+  Future<({String sessionId, String code})> createSession({
     required String adminId,
-    required String code,
+    required String Function() nextCode,
   }) async {
     try {
-      final doc = _firestore.collection(FirestoreConstants.sessions).doc();
-      await doc.set({
-        FirestoreConstants.adminId: adminId,
-        FirestoreConstants.status: 'waiting',
-        FirestoreConstants.code: code,
-        FirestoreConstants.createdAt: FieldValue.serverTimestamp(),
+      for (var attempt = 0; attempt < _maxCodeAttempts; attempt++) {
+        final code = nextCode();
+        final codeRef =
+            _firestore.collection(FirestoreConstants.sessionCodes).doc(code);
+        final sessionRef =
+            _firestore.collection(FirestoreConstants.sessions).doc();
+        // Claim the code and create the session atomically: two admins
+        // drawing the same code can't both get it, and a live session's
+        // code is never overwritten (which would send its cameras into the
+        // new session).
+        final claimed = await _firestore.runTransaction<bool>((tx) async {
+          final existing = await tx.get(codeRef);
+          if (existing.exists && !isSessionCodeExpired(existing.data())) {
+            return false;
+          }
+          tx.set(sessionRef, {
+            FirestoreConstants.adminId: adminId,
+            FirestoreConstants.status: 'waiting',
+            FirestoreConstants.code: code,
+            FirestoreConstants.createdAt: FieldValue.serverTimestamp(),
+          });
+          // Reverse-lookup so cameras resolve code → sessionId in O(1).
+          tx.set(codeRef, {
+            'sessionId': sessionRef.id,
+            FirestoreConstants.createdAt: FieldValue.serverTimestamp(),
+            FirestoreConstants.expiresAt: Timestamp.fromDate(
+              DateTime.now().add(sessionCodeLifetime),
+            ),
+          });
+          return true;
+        });
+        if (claimed) return (sessionId: sessionRef.id, code: code);
+      }
+      throw const FirestoreException(
+        'Could not get a free session code. Please try again.',
+      );
+    } on FirebaseException catch (e) {
+      throw FirestoreException(e.message ?? 'Firestore error');
+    }
+  }
+
+  @override
+  Future<void> endSession(String sessionId) async {
+    try {
+      final sessionRef =
+          _firestore.collection(FirestoreConstants.sessions).doc(sessionId);
+      await _firestore.runTransaction<void>((tx) async {
+        final session = await tx.get(sessionRef);
+        final code = session.data()?[FirestoreConstants.code] as String?;
+        if (code != null) {
+          final codeRef =
+              _firestore.collection(FirestoreConstants.sessionCodes).doc(code);
+          final codeDoc = await tx.get(codeRef);
+          // Only free the code if it still points here; it may already have
+          // expired and been claimed by another session.
+          if (codeDoc.data()?['sessionId'] == sessionId) tx.delete(codeRef);
+        }
+        tx.update(sessionRef, {FirestoreConstants.status: 'ended'});
       });
-      // Reverse-lookup so cameras resolve code → sessionId in O(1).
-      await _firestore
-          .collection(FirestoreConstants.sessionCodes)
-          .doc(code)
-          .set({
-        'sessionId': doc.id,
-        FirestoreConstants.createdAt: FieldValue.serverTimestamp(),
-      });
-      return doc.id;
     } on FirebaseException catch (e) {
       throw FirestoreException(e.message ?? 'Firestore error');
     }
