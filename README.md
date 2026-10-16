@@ -88,6 +88,17 @@ lib/
 flutter test
 ```
 
+## Firestore Security Rules
+
+The rules live in `firestore.rules`. The app has no Firebase Authentication, so they can't tell users apart. Instead they deny unused collections, never allow listing sessions or codes (a session is reachable only through its code or ID), validate written data, and stop writes into ended sessions.
+
+Test them against the emulator, then deploy:
+
+```bash
+cd firestore_rules_test && npm install && npm test   # needs Java
+cd .. && npx firebase-tools deploy --only firestore:rules
+```
+
 ## License
 
 Private project — all rights reserved.
