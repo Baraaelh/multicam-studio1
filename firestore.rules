@@ -1,0 +1,100 @@
+rules_version = '2';
+
+// Security rules for Multicam Studio.
+//
+// The app has no Firebase Authentication yet, so these rules cannot tell
+// users apart. Instead they:
+//   - deny every collection the app doesn't use,
+//   - never allow listing sessions, codes or probes, so a session can only be
+//     reached by knowing its 6-digit code or its random 20-character ID,
+//   - validate the shape of what is written,
+//   - stop writes into ended sessions and only let codes be reused or freed
+//     once expired or ended.
+//
+// Tests: firestore_rules_test/ (runs against the Firestore emulator).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function sessionPath(sessionId) {
+      return /databases/$(database)/documents/sessions/$(sessionId);
+    }
+
+    // Codes reserve for 24 h (lib/core/constants/session_lifetime.dart).
+    // Documents written before expiresAt existed fall back to createdAt.
+    function codeExpired(data) {
+      return data.get('expiresAt', data.createdAt + duration.value(24, 'h'))
+          < request.time;
+    }
+
+    // --- session_codes/{code}: code → sessionId reverse lookup -------------
+    match /session_codes/{code} {
+      // Cameras resolve one code at a time; codes are never enumerable.
+      allow get: if true;
+      allow list: if false;
+
+      allow create: if validCode(code, request.resource.data);
+      // A code can only be taken over once it no longer reserves a session,
+      // so a live session's cameras can't be redirected to another session.
+      allow update: if codeExpired(resource.data)
+          && validCode(code, request.resource.data);
+      // Freed when its session ends (same transaction) or after expiry.
+      allow delete: if codeExpired(resource.data)
+          || (existsAfter(sessionPath(resource.data.sessionId))
+              && getAfter(sessionPath(resource.data.sessionId)).data.status == 'ended');
+
+      function validCode(code, data) {
+        return code.matches('^[0-9]{6}$')
+            && data.keys().hasOnly(['sessionId', 'createdAt', 'expiresAt'])
+            && data.sessionId is string
+            && data.createdAt == request.time
+            && (!('expiresAt' in data) || data.expiresAt is timestamp);
+      }
+    }
+
+    // --- sessions/{sessionId} ---------------------------------------------
+    match /sessions/{sessionId} {
+      allow get: if true;
+      allow list: if false;
+
+      allow create: if request.resource.data.keys()
+              .hasOnly(['adminId', 'status', 'code', 'createdAt', 'expiresAt'])
+          && request.resource.data.adminId is string
+          && request.resource.data.status == 'waiting'
+          && request.resource.data.code.matches('^[0-9]{6}$')
+          && request.resource.data.createdAt == request.time;
+
+      // Only the status changes after creation, and an ended session stays ended.
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status'])
+          && request.resource.data.status in ['waiting', 'live', 'ended']
+          && resource.data.status != 'ended';
+
+      // Removed by the end-of-session cleanup, or once its data expired.
+      allow delete: if resource.data.status == 'ended'
+          || resource.data.get('expiresAt', request.time) < request.time;
+
+      // Everything under a session: peers (+ ICE candidates), commands,
+      // recordings, timeline. Reachable only through the session ID.
+      // {subcollection} is required so this never matches the session
+      // document itself ({rest=**} alone can match zero segments).
+      match /{subcollection}/{rest=**} {
+        allow read: if exists(sessionPath(sessionId));
+        // No new data once the session has ended.
+        allow create, update: if exists(sessionPath(sessionId))
+            && get(sessionPath(sessionId)).data.status != 'ended';
+        // The cleanup runs after the session is marked ended.
+        allow delete: if exists(sessionPath(sessionId));
+      }
+    }
+
+    // --- _clock_probes/{id}: server-time probes for clock sync -------------
+    match /_clock_probes/{probeId} {
+      allow create: if request.resource.data.keys().hasOnly(['t', 'expiresAt'])
+          && request.resource.data.t == request.time;
+      allow get, delete: if true;
+      allow list, update: if false;
+    }
+
+    // Anything else is denied by default.
+  }
+}
