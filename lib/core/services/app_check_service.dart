@@ -3,15 +3,17 @@ import 'dart:developer' as dev;
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter/foundation.dart';
 
-/// Use the App Check debug provider instead of Play Integrity.
+/// Use Play Integrity instead of the App Check debug provider.
 ///
-/// Play Integrity only attests apps installed from Google Play. Builds that
-/// are installed directly (shared APK, `flutter run`) must use the debug
-/// provider, and each device's debug token has to be allowed in Firebase
-/// Console → App Check → Apps → Manage debug tokens. Debug builds always use
-/// it; release builds opt in with `--dart-define=APP_CHECK_DEBUG=true`.
-const bool _useDebugProvider =
-    kDebugMode || bool.fromEnvironment('APP_CHECK_DEBUG');
+/// The app is distributed as a directly installed APK, and Play Integrity
+/// only attests apps installed from Google Play, so every build uses the
+/// debug provider by default: each device's debug token has to be allowed in
+/// Firebase Console → App Check → Apps → Manage debug tokens. A release build
+/// published on Google Play opts in with
+/// `--dart-define=APP_CHECK_PLAY_INTEGRITY=true`.
+const bool _usePlayIntegrity =
+    !kDebugMode && bool.fromEnvironment('APP_CHECK_PLAY_INTEGRITY');
+const bool _useDebugProvider = !_usePlayIntegrity;
 
 /// Turns on Firebase App Check, so Firestore and Auth can reject requests
 /// that don't come from this app (e.g. scripts using the API key from the
