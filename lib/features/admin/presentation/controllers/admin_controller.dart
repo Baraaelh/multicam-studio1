@@ -1007,6 +1007,9 @@ class AdminController extends GetxController {
 
   void _onCoAdminCommand(SyncCommand? cmd) {
     if (cmd == null || cmd.type != CommandType.switchActiveCamera) return;
+    // Only cameras this admin promoted may switch the program feed.
+    final sender = cmd.payload?['senderPeerId'] as String?;
+    if (sender == null || !coAdminPeerIds.contains(sender)) return;
     final targetPeerId = cmd.payload?['peerId'] as String?;
     if (targetPeerId != null) switchActiveCamera(targetPeerId);
   }

@@ -9,6 +9,8 @@ abstract final class FirestoreConstants {
   // Session document fields
   static const String status = 'status';
   static const String adminId = 'adminId';
+  // Firebase Auth UID of the admin device; the security rules check it.
+  static const String adminUid = 'adminUid';
   static const String code = 'code';
   static const String createdAt = 'createdAt';
   static const String expiresAt = 'expiresAt';
@@ -17,6 +19,8 @@ abstract final class FirestoreConstants {
   static const String offer = 'offer';
   static const String answer = 'answer';
   static const String deviceName = 'deviceName';
+  // Firebase Auth UID of the camera device that owns the peer document.
+  static const String peerUid = 'uid';
   static const String joinedAt = 'joinedAt';
 
   // SDP fields (nested under offer/answer)

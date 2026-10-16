@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../../core/constants/firestore_constants.dart';
 import '../../../../core/constants/session_lifetime.dart';
 import '../../../../core/error/exceptions.dart';
+import '../../../../core/services/auth_service.dart';
 import '../../../session/domain/entities/switch_event.dart';
 
 abstract interface class SessionRemoteDataSource {
@@ -26,8 +27,12 @@ abstract interface class SessionRemoteDataSource {
 
 class FirebaseSessionDataSource implements SessionRemoteDataSource {
   final FirebaseFirestore _firestore;
-  const FirebaseSessionDataSource({required FirebaseFirestore firestore})
-      : _firestore = firestore;
+  final AuthService _auth;
+  const FirebaseSessionDataSource({
+    required FirebaseFirestore firestore,
+    required AuthService auth,
+  })  : _firestore = firestore,
+        _auth = auth;
 
   static const _maxCodeAttempts = 5;
 
@@ -37,6 +42,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
     required String Function() nextCode,
   }) async {
     try {
+      final adminUid = await _auth.ensureSignedIn();
       for (var attempt = 0; attempt < _maxCodeAttempts; attempt++) {
         final code = nextCode();
         final codeRef =
@@ -54,6 +60,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
           }
           tx.set(sessionRef, {
             FirestoreConstants.adminId: adminId,
+            FirestoreConstants.adminUid: adminUid,
             FirestoreConstants.status: 'waiting',
             FirestoreConstants.code: code,
             FirestoreConstants.createdAt: FieldValue.serverTimestamp(),
@@ -81,6 +88,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
 
   @override
   Future<void> endSession(String sessionId) async {
+    await _auth.ensureSignedIn();
     try {
       final sessionRef =
           _firestore.collection(FirestoreConstants.sessions).doc(sessionId);
@@ -157,6 +165,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
 
   @override
   Future<void> updateStatus(String sessionId, String status) async {
+    await _auth.ensureSignedIn();
     try {
       await _firestore
           .collection(FirestoreConstants.sessions)
@@ -169,6 +178,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
 
   @override
   Future<void> initTimeline(String sessionId) async {
+    await _auth.ensureSignedIn();
     try {
       final col = _firestore
           .collection(FirestoreConstants.sessions)
@@ -188,6 +198,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
 
   @override
   Future<void> appendSwitchEvent(String sessionId, SwitchEvent event) async {
+    await _auth.ensureSignedIn();
     try {
       await _firestore
           .collection(FirestoreConstants.sessions)
@@ -205,6 +216,7 @@ class FirebaseSessionDataSource implements SessionRemoteDataSource {
 
   @override
   Future<List<SwitchEvent>> fetchTimeline(String sessionId) async {
+    await _auth.ensureSignedIn();
     try {
       final snapshot = await _firestore
           .collection(FirestoreConstants.sessions)

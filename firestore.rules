@@ -2,21 +2,49 @@ rules_version = '2';
 
 // Security rules for Multicam Studio.
 //
-// The app has no Firebase Authentication yet, so these rules cannot tell
-// users apart. Instead they:
+// Every device signs in anonymously (lib/core/services/auth_service.dart).
+// The session stores its admin's UID (adminUid) and each camera's peer
+// document stores the camera's UID (uid). The rules:
+//   - require a signed-in device for everything,
 //   - deny every collection the app doesn't use,
-//   - never allow listing sessions, codes or probes, so a session can only be
-//     reached by knowing its 6-digit code or its random 20-character ID,
-//   - validate the shape of what is written,
-//   - stop writes into ended sessions and only let codes be reused or freed
-//     once expired or ended.
+//   - never allow listing sessions, codes or probes, so a session is only
+//     reachable through its 6-digit code or its random ID,
+//   - let only the admin control a session (status, code, commands,
+//     timeline, cleanup) and each camera write only its own data,
+//   - validate written shapes and stop writes into ended sessions.
 //
 // Tests: firestore_rules_test/ (runs against the Firestore emulator).
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
     function sessionPath(sessionId) {
       return /databases/$(database)/documents/sessions/$(sessionId);
+    }
+
+    function peerPath(sessionId, peerId) {
+      return /databases/$(database)/documents/sessions/$(sessionId)/peers/$(peerId);
+    }
+
+    function isSessionAdmin(sessionId) {
+      return signedIn()
+          && exists(sessionPath(sessionId))
+          && get(sessionPath(sessionId)).data.get('adminUid', null) == request.auth.uid;
+    }
+
+    function sessionLive(sessionId) {
+      return exists(sessionPath(sessionId))
+          && get(sessionPath(sessionId)).data.status != 'ended';
+    }
+
+    // The signed-in camera owns this peer document.
+    function ownsPeer(sessionId, peerId) {
+      return signedIn()
+          && exists(peerPath(sessionId, peerId))
+          && get(peerPath(sessionId, peerId)).data.get('uid', null) == request.auth.uid;
     }
 
     // Codes reserve for 24 h (lib/core/constants/session_lifetime.dart).
@@ -29,7 +57,7 @@ service cloud.firestore {
     // --- session_codes/{code}: code → sessionId reverse lookup -------------
     match /session_codes/{code} {
       // Cameras resolve one code at a time; codes are never enumerable.
-      allow get: if true;
+      allow get: if signedIn();
       allow list: if false;
 
       allow create: if validCode(code, request.resource.data);
@@ -37,61 +65,142 @@ service cloud.firestore {
       // so a live session's cameras can't be redirected to another session.
       allow update: if codeExpired(resource.data)
           && validCode(code, request.resource.data);
-      // Freed when its session ends (same transaction) or after expiry.
-      allow delete: if codeExpired(resource.data)
+      // Freed by its admin when the session ends (same transaction), or by
+      // anyone once expired.
+      allow delete: if signedIn() && (codeExpired(resource.data)
           || (existsAfter(sessionPath(resource.data.sessionId))
-              && getAfter(sessionPath(resource.data.sessionId)).data.status == 'ended');
+              && getAfter(sessionPath(resource.data.sessionId)).data.status == 'ended'
+              && getAfter(sessionPath(resource.data.sessionId)).data.get('adminUid', null)
+                  == request.auth.uid));
 
+      // The code must point at a session the caller administers; it is
+      // created in the same transaction, hence getAfter.
       function validCode(code, data) {
-        return code.matches('^[0-9]{6}$')
+        return signedIn()
+            && code.matches('^[0-9]{6}$')
             && data.keys().hasOnly(['sessionId', 'createdAt', 'expiresAt'])
             && data.sessionId is string
             && data.createdAt == request.time
-            && (!('expiresAt' in data) || data.expiresAt is timestamp);
+            && (!('expiresAt' in data) || data.expiresAt is timestamp)
+            && existsAfter(sessionPath(data.sessionId))
+            && getAfter(sessionPath(data.sessionId)).data.get('adminUid', null)
+                == request.auth.uid;
       }
     }
 
     // --- sessions/{sessionId} ---------------------------------------------
     match /sessions/{sessionId} {
-      allow get: if true;
+      allow get: if signedIn();
       allow list: if false;
 
-      allow create: if request.resource.data.keys()
-              .hasOnly(['adminId', 'status', 'code', 'createdAt', 'expiresAt'])
+      allow create: if signedIn()
+          && request.resource.data.keys()
+              .hasOnly(['adminId', 'adminUid', 'status', 'code', 'createdAt', 'expiresAt'])
+          && request.resource.data.adminUid == request.auth.uid
           && request.resource.data.adminId is string
           && request.resource.data.status == 'waiting'
           && request.resource.data.code.matches('^[0-9]{6}$')
           && request.resource.data.createdAt == request.time;
 
-      // Only the status changes after creation, and an ended session stays ended.
-      allow update: if request.resource.data.diff(resource.data).affectedKeys()
-              .hasOnly(['status'])
+      // Only the admin changes it, only the status, and ended is final.
+      allow update: if signedIn()
+          && resource.data.get('adminUid', null) == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
           && request.resource.data.status in ['waiting', 'live', 'ended']
           && resource.data.status != 'ended';
 
-      // Removed by the end-of-session cleanup, or once its data expired.
-      allow delete: if resource.data.status == 'ended'
-          || resource.data.get('expiresAt', request.time) < request.time;
+      // Removed by the admin's end-of-session cleanup, or once expired.
+      allow delete: if signedIn() && (
+          (resource.data.get('adminUid', null) == request.auth.uid
+              && resource.data.status == 'ended')
+          || resource.data.get('expiresAt', request.time) < request.time);
 
-      // Everything under a session: peers (+ ICE candidates), commands,
-      // recordings, timeline. Reachable only through the session ID.
-      // {subcollection} is required so this never matches the session
-      // document itself ({rest=**} alone can match zero segments).
-      match /{subcollection}/{rest=**} {
-        allow read: if exists(sessionPath(sessionId));
-        // No new data once the session has ended.
-        allow create, update: if exists(sessionPath(sessionId))
-            && get(sessionPath(sessionId)).data.status != 'ended';
-        // The cleanup runs after the session is marked ended.
-        allow delete: if exists(sessionPath(sessionId));
+      // --- peers/{peerId}: one per camera --------------------------------
+      // Written by the camera (registration, answer) and by the admin
+      // (offer). Signaling teardown deletes offer/answer from either side.
+      match /peers/{peerId} {
+        allow read: if signedIn() && exists(sessionPath(sessionId));
+
+        allow create: if sessionLive(sessionId) && (
+            // Camera registering itself.
+            (signedIn()
+                && request.resource.data.get('uid', null) == request.auth.uid
+                && request.resource.data.keys().hasOnly(cameraFields()))
+            // Admin opening a slot before the camera registered.
+            || (isSessionAdmin(sessionId)
+                && request.resource.data.keys().hasOnly(adminFields())));
+
+        allow update: if sessionLive(sessionId) && (
+            // The owning camera, or a camera claiming a slot nobody owns yet.
+            (signedIn()
+                && resource.data.get('uid', request.auth.uid) == request.auth.uid
+                && request.resource.data.get('uid', null) == request.auth.uid
+                && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(cameraFields()))
+            || (isSessionAdmin(sessionId)
+                && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(adminFields())));
+
+        allow delete: if isSessionAdmin(sessionId) || ownsPeer(sessionId, peerId);
+
+        function cameraFields() {
+          return ['uid', 'deviceName', 'joinedAt', 'capabilities', 'answer', 'offer', 'expiresAt'];
+        }
+
+        function adminFields() {
+          return ['offer', 'answer', 'expiresAt'];
+        }
+
+        // ICE candidates, each side writing only its own direction.
+        match /admin_candidates/{candidateId} {
+          allow read: if signedIn() && exists(sessionPath(sessionId));
+          allow create: if sessionLive(sessionId) && isSessionAdmin(sessionId);
+          allow delete: if isSessionAdmin(sessionId) || ownsPeer(sessionId, peerId);
+        }
+
+        match /camera_candidates/{candidateId} {
+          allow read: if signedIn() && exists(sessionPath(sessionId));
+          allow create: if sessionLive(sessionId) && ownsPeer(sessionId, peerId);
+          allow delete: if isSessionAdmin(sessionId) || ownsPeer(sessionId, peerId);
+        }
+      }
+
+      // --- commands: timed commands to the cameras -----------------------
+      match /commands/{commandId} {
+        allow read: if signedIn() && exists(sessionPath(sessionId));
+        // The admin issues every command; a co-admin camera may only switch
+        // the program feed, naming itself as the sender.
+        allow create: if sessionLive(sessionId) && (
+            isSessionAdmin(sessionId)
+            || (request.resource.data.type == 'switchActiveCamera'
+                && request.resource.data.payload.senderPeerId is string
+                && ownsPeer(sessionId, request.resource.data.payload.senderPeerId)));
+        allow delete: if isSessionAdmin(sessionId);
+      }
+
+      // --- recordings: published by the camera that recorded them --------
+      match /recordings/{recordingId} {
+        allow read: if signedIn() && exists(sessionPath(sessionId));
+        allow create: if sessionLive(sessionId)
+            && request.resource.data.peerId is string
+            && ownsPeer(sessionId, request.resource.data.peerId);
+        allow delete: if isSessionAdmin(sessionId);
+      }
+
+      // --- timeline: the admin's switch history --------------------------
+      match /timeline/{eventId} {
+        allow read: if signedIn() && exists(sessionPath(sessionId));
+        allow create: if sessionLive(sessionId) && isSessionAdmin(sessionId);
+        allow delete: if isSessionAdmin(sessionId);
       }
     }
 
     // --- _clock_probes/{id}: server-time probes for clock sync -------------
     match /_clock_probes/{probeId} {
-      allow create: if request.resource.data.keys().hasOnly(['t', 'expiresAt'])
+      allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['t', 'expiresAt'])
           && request.resource.data.t == request.time;
-      allow get, delete: if true;
+      allow get, delete: if signedIn();
       allow list, update: if false;
     }
 

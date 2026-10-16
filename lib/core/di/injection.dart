@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:get_it/get_it.dart';
 
 import '../platform/camera_service_platform.dart';
+import '../services/auth_service.dart';
 import '../services/clock_sync_service.dart';
 import '../services/ffmpeg_service.dart';
 import '../services/webrtc_service.dart';
@@ -52,6 +54,9 @@ void configureDependencies() {
   getIt.registerLazySingleton<FirebaseFirestore>(
     () => FirebaseFirestore.instance,
   );
+  getIt.registerLazySingleton<AuthService>(
+    () => AuthService(auth: FirebaseAuth.instance),
+  );
 
   // Core services & platform
   getIt.registerLazySingleton<WebRtcService>(() => WebRtcService());
@@ -78,7 +83,10 @@ void configureDependencies() {
 
   // --- Session (signaling) ---
   getIt.registerLazySingleton<SignalingRemoteDataSource>(
-    () => FirebaseSignalingDataSource(firestore: getIt<FirebaseFirestore>()),
+    () => FirebaseSignalingDataSource(
+      firestore: getIt<FirebaseFirestore>(),
+      auth: getIt<AuthService>(),
+    ),
   );
   getIt.registerLazySingleton<SignalingRepository>(
     () => SignalingRepositoryImpl(
@@ -131,7 +139,10 @@ void configureDependencies() {
 
   // --- Admin / session management ---
   getIt.registerLazySingleton<SessionRemoteDataSource>(
-    () => FirebaseSessionDataSource(firestore: getIt<FirebaseFirestore>()),
+    () => FirebaseSessionDataSource(
+      firestore: getIt<FirebaseFirestore>(),
+      auth: getIt<AuthService>(),
+    ),
   );
   getIt.registerLazySingleton<SessionRepository>(
     () => SessionRepositoryImpl(dataSource: getIt<SessionRemoteDataSource>()),
