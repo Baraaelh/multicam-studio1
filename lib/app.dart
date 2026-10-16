@@ -30,13 +30,21 @@ class App extends StatelessWidget {
           page: () => const CodeJoinPage(),
           binding: CameraBinding(),
         ),
-        GetPage(name: '/camera', page: () => const CameraPage()),
+        GetPage(
+          name: '/camera',
+          page: () => const CameraPage(),
+          binding: CameraBinding(),
+        ),
         GetPage(
           name: '/admin',
           page: () => const AdminSetupPage(),
           binding: AdminBinding(),
         ),
-        GetPage(name: '/admin/live', page: () => const AdminLivePage()),
+        GetPage(
+          name: '/admin/live',
+          page: () => const AdminLivePage(),
+          binding: AdminBinding(),
+        ),
         GetPage(
           name: '/admin/render',
           page: () => const RenderPage(),
@@ -49,7 +57,7 @@ class App extends StatelessWidget {
 }
 
 class ModeSelectPage extends StatelessWidget {
-  const ModeSelectPage();
+  const ModeSelectPage({super.key});
 
   @override
   Widget build(BuildContext context) {

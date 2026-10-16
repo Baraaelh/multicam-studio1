@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../controllers/camera_controller.dart';
-import 'camera_page.dart';
 
 class CodeJoinPage extends StatefulWidget {
   const CodeJoinPage({super.key});
@@ -42,7 +41,7 @@ class _CodeJoinPageState extends State<CodeJoinPage> {
     result.fold(
       onSuccess: (payload) {
         // Navigate first, then start camera (same pattern as previous QR flow).
-        Get.to<void>(() => const CameraPage());
+        Get.toNamed<void>('/camera');
         controller.startFromQr(payload);
       },
       onFailure: (f) {
