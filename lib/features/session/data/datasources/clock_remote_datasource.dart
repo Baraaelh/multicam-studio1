@@ -3,6 +3,7 @@ import 'dart:developer' as dev;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
+import '../../../../core/constants/session_lifetime.dart';
 
 abstract interface class ClockRemoteDataSource {
   Future<String> addCommand(String sessionId, Map<String, dynamic> data);
@@ -27,7 +28,10 @@ class FirebaseClockDataSource implements ClockRemoteDataSource {
     // instantly and can dispatch the LAN fast-path without waiting ~300 ms for
     // a server round-trip. The write still completes for Firestore fallback delivery.
     final ref = _commandsCol(sessionId).doc();
-    ref.set(data).catchError(
+    ref.set({
+      ...data,
+      FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+    }).catchError(
       (Object e) => dev.log('addCommand write failed: $e', name: 'ClockDataSource'),
     );
     return Future.value(ref.id);

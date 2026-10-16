@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../constants/firestore_constants.dart';
+import '../constants/session_lifetime.dart';
+
 enum SyncQuality { unsynced, good, degraded }
 
 /// Measures and maintains the clock offset between this device and the
@@ -50,7 +53,10 @@ class ClockSyncService {
       final ref = col.doc();
       try {
         final t1 = DateTime.now().millisecondsSinceEpoch;
-        await ref.set({'t': FieldValue.serverTimestamp()});
+        await ref.set({
+          't': FieldValue.serverTimestamp(),
+          FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+        });
         final t2 = DateTime.now().millisecondsSinceEpoch;
 
         final snap = await ref.get(const GetOptions(source: Source.server));
