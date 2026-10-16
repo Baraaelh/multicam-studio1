@@ -239,9 +239,10 @@ class AdminController extends GetxController {
     final s = session.value;
     if (s == null || !_isValidSession()) return;
 
-    const bufferMs = 3000;
-    _recordingStartedAt =
-        DateTime.now().add(const Duration(milliseconds: bufferMs));
+    // One instant drives the timeline AND both delivery paths, so the render
+    // offsets match when the cameras actually start recording.
+    final startAt = _commandExecuteAt();
+    _recordingStartedAt = startAt;
     _recordingStoppedAt = null;
     switchHistory.clear();
     _cameraRecordingStartAt.clear();
@@ -270,19 +271,12 @@ class AdminController extends GetxController {
       if (masterCamId != null) 'masterAudioCameraId': masterCamId,
       if (profile != null) ...profile.toMap(),
     };
-    final commandId = await _clockController.issueCommand(
+    await _issueTimedCommand(
       s.sessionId,
       CommandType.startRecording,
-      bufferMs: 1000,
+      startAt,
       payload: payload.isEmpty ? null : payload,
     );
-    if (commandId != null) {
-      _sendLanCommand(
-        commandId,
-        CommandType.startRecording,
-        payload: payload.isEmpty ? null : payload,
-      );
-    }
     isRecording.value = true;
     recordingSeconds.value = 0;
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -294,17 +288,10 @@ class AdminController extends GetxController {
     final s = session.value;
     if (s == null || !_isValidSession()) return;
 
-    _recordingStoppedAt =
-        DateTime.now().add(const Duration(milliseconds: 200));
+    final stopAt = _commandExecuteAt();
+    _recordingStoppedAt = stopAt;
 
-    final stopId = await _clockController.issueCommand(
-      s.sessionId,
-      CommandType.stopRecording,
-      bufferMs: 1000,
-    );
-    if (stopId != null) {
-      _sendLanCommand(stopId, CommandType.stopRecording);
-    }
+    await _issueTimedCommand(s.sessionId, CommandType.stopRecording, stopAt);
     isRecording.value = false;
     _recordingTimer?.cancel();
     _recordingTimer = null;
@@ -776,53 +763,79 @@ class AdminController extends GetxController {
 
   Future<void> _autoStartRecordingForPeer(String peerId, String sessionId) async {
     if (!_isValidSession()) return;
-    const bufferMs = 1000;
-    _cameraRecordingStartAt[peerId] = DateTime.now().add(const Duration(milliseconds: 200));
+    final startAt = _commandExecuteAt();
+    _cameraRecordingStartAt[peerId] = startAt;
     final masterCamId = masterAudioCameraId.value;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
       if (masterCamId != null) 'masterAudioCameraId': masterCamId,
       if (profile != null) ...profile.toMap(),
     };
-    final commandId = await _clockController.issueCommand(
+    await _issueTimedCommand(
       sessionId,
       CommandType.startRecording,
-      bufferMs: bufferMs,
+      startAt,
       targetPeerId: peerId,
       payload: payload.isEmpty ? null : payload,
+    );
+  }
+
+  /// Lead time for recording start/stop commands. Long enough for the
+  /// Firestore fallback to reach every camera before the instant arrives;
+  /// the LAN fast-path arrives sooner and simply waits for the same instant.
+  static const _commandLeadMs = 1000;
+
+  /// Local admin time at which a recording command will execute everywhere.
+  DateTime _commandExecuteAt() =>
+      DateTime.now().add(const Duration(milliseconds: _commandLeadMs));
+
+  /// Publishes a recording command over Firestore and the LAN data channel,
+  /// both pinned to the same execution instant [executeAtLocal].
+  Future<void> _issueTimedCommand(
+    String sessionId,
+    CommandType type,
+    DateTime executeAtLocal, {
+    String? targetPeerId,
+    Map<String, dynamic>? payload,
+  }) async {
+    final executeAtMs = _clockController.localToServerMs(executeAtLocal);
+    final commandId = await _clockController.issueCommand(
+      sessionId,
+      type,
+      bufferMs: _commandLeadMs,
+      targetPeerId: targetPeerId,
+      payload: payload,
+      executeAtMs: executeAtMs,
     );
     if (commandId != null) {
       _sendLanCommand(
         commandId,
-        CommandType.startRecording,
-        targetPeerId: peerId,
-        payload: payload.isEmpty ? null : payload,
+        type,
+        executeAtMs,
+        targetPeerId: targetPeerId,
+        payload: payload,
       );
     }
   }
 
   /// Sends a recording command directly to cameras over the LAN WebRTC data
   /// channel. The [commandId] is the Firestore doc ID so cameras can deduplicate
-  /// against the Firestore fallback using a single shared ID.
+  /// against the Firestore fallback using a single shared ID. [executeAtMs] is
+  /// the same server-equivalent instant stored in the Firestore command, so
+  /// whichever path arrives first, the camera fires at the same moment.
   void _sendLanCommand(
     String commandId,
-    CommandType type, {
+    CommandType type,
+    int executeAtMs, {
     String? targetPeerId,
     Map<String, dynamic>? payload,
   }) {
-    // Compute executeAt in server-equivalent milliseconds using the synced offset.
-    // LAN buffer is 200 ms — tight enough to be fast, generous enough for WiFi jitter.
-    const lanBufferMs = 200;
-    final serverNowMs = DateTime.now().millisecondsSinceEpoch -
-        _clockController.offsetMs.value;
-    final executeAtMs = serverNowMs + lanBufferMs;
-
     final msg = jsonEncode({
       'commandId': commandId,
       'type': type.name,
       'executeAtMs': executeAtMs,
-      ?'targetPeerId': targetPeerId,
-      ?'payload': payload,
+      'targetPeerId': ?targetPeerId,
+      'payload': ?payload,
     });
 
     final targets = targetPeerId != null

@@ -7,6 +7,7 @@ abstract interface class ClockRepository {
     int bufferMs, {
     String? targetPeerId,
     Map<String, dynamic>? payload,
+    int? executeAtMs,
   });
 
   Stream<SyncCommand> watchCommands(String sessionId, {DateTime? issuedAfter});
