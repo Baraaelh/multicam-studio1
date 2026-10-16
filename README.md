@@ -102,9 +102,17 @@ flutter test
 
 ## Firestore Security Rules
 
-The rules live in `firestore.rules`. The app has no Firebase Authentication, so they can't tell users apart. Instead they deny unused collections, never allow listing sessions or codes (a session is reachable only through its code or ID), validate written data, and stop writes into ended sessions.
+Every device signs in with **Firebase Anonymous Auth** at startup. Nothing is asked of the user, and the UID persists across restarts. The session stores its admin's UID and each camera's peer document stores the camera's UID. The rules in `firestore.rules` use them so that:
 
-Test them against the emulator, then deploy:
+- only signed-in devices can access anything, and unused collections are denied;
+- sessions and codes can't be listed, so a session is reachable only through its code or ID;
+- only the admin controls a session: status, code, commands, timeline, cleanup;
+- each camera writes only its own peer document, ICE candidates and recordings. A co-admin camera may only send `switchActiveCamera` in its own name;
+- written data is validated, and ended sessions accept no new data.
+
+**Setup:** enable **Anonymous** under Firebase Console → Authentication → Sign-in method.
+
+Test the rules against the emulator, then deploy:
 
 ```bash
 cd firestore_rules_test && npm install && npm test   # needs Java

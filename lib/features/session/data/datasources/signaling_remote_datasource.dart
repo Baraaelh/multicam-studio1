@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../../core/constants/firestore_constants.dart';
 import '../../../../core/constants/session_lifetime.dart';
 import '../../../../core/error/exceptions.dart';
+import '../../../../core/services/auth_service.dart';
 import '../../../session/domain/entities/recording_profile.dart';
 
 abstract interface class SignalingRemoteDataSource {
@@ -56,8 +57,12 @@ abstract interface class SignalingRemoteDataSource {
 
 class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
   final FirebaseFirestore _firestore;
-  const FirebaseSignalingDataSource({required FirebaseFirestore firestore})
-      : _firestore = firestore;
+  final AuthService _auth;
+  const FirebaseSignalingDataSource({
+    required FirebaseFirestore firestore,
+    required AuthService auth,
+  })  : _firestore = firestore,
+        _auth = auth;
 
   DocumentReference<Map<String, dynamic>> _peerDoc(
           String sessionId, String peerId) =>
@@ -84,6 +89,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     String peerId,
     Map<String, dynamic> data,
   ) async {
+    await _auth.ensureSignedIn();
     try {
       await _peerDoc(sessionId, peerId).set(
         {
@@ -103,6 +109,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     String peerId,
     Map<String, dynamic> data,
   ) async {
+    await _auth.ensureSignedIn();
     try {
       await _peerDoc(sessionId, peerId).set(
         {
@@ -132,6 +139,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     Map<String, dynamic> data, {
     required bool isAdmin,
   }) async {
+    await _auth.ensureSignedIn();
     try {
       await _candidatesCollection(sessionId, peerId, isAdmin: isAdmin).add({
         ...data,
@@ -165,6 +173,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
 
   @override
   Future<void> clearPeerSignaling(String sessionId, String peerId) async {
+    await _auth.ensureSignedIn();
     try {
       final doc = _peerDoc(sessionId, peerId);
 
@@ -189,10 +198,13 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     String deviceName,
     List<Map<String, dynamic>> capabilities,
   ) async {
+    await _auth.ensureSignedIn();
     try {
       await _peerDoc(sessionId, peerId).set(
         {
           'deviceName': deviceName,
+          // Marks this device as the owner of the peer document.
+          FirestoreConstants.peerUid: _auth.uid,
           'joinedAt': FieldValue.serverTimestamp(),
           FirestoreConstants.capabilities: capabilities,
           FirestoreConstants.expiresAt: sessionDataExpiresAt(),
@@ -212,6 +224,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
 
   @override
   Future<String?> lookupSessionCode(String code) async {
+    await _auth.ensureSignedIn();
     try {
       final doc = await _firestore
           .collection(FirestoreConstants.sessionCodes)

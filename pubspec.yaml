@@ -17,6 +17,8 @@ dependencies:
   # Firebase
   firebase_core: ^3.6.0
   cloud_firestore: ^5.4.4
+  # Anonymous sign-in: gives each device a stable UID for security rules
+  firebase_auth: ^5.5.0
 
   # State management & DI
   get: ^4.6.6

@@ -312,7 +312,9 @@ class CameraController extends GetxController {
       payload.sessionId,
       CommandType.switchActiveCamera,
       bufferMs: 0,
-      payload: {'peerId': targetPeerId},
+      // senderPeerId lets the admin (and the security rules) check that the
+      // command comes from a camera it promoted to co-admin.
+      payload: {'peerId': targetPeerId, 'senderPeerId': payload.peerId},
     );
   }
 
