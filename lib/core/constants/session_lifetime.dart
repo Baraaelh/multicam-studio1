@@ -19,3 +19,16 @@ bool isSessionCodeExpired(Map<String, dynamic>? data) {
   }
   return true;
 }
+
+/// How long a session's Firestore data is kept. Ending a session deletes it
+/// right away; this bound covers sessions that are never ended (app killed,
+/// crash). Longer than any realistic session, since a TTL policy may delete
+/// a document as soon as it expires.
+const sessionDataLifetime = Duration(days: 7);
+
+/// `expiresAt` value for every document written under a session. A Firestore
+/// TTL policy on each collection group (see tool/enable_firestore_ttl.sh)
+/// deletes expired documents. TTL deletes only the document itself, not its
+/// subcollections, so every document needs its own field.
+Timestamp sessionDataExpiresAt() =>
+    Timestamp.fromDate(DateTime.now().add(sessionDataLifetime));

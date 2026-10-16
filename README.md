@@ -81,6 +81,18 @@ lib/
 - The 6-digit session code acts as the access key for cameras
 - The admin ID is verified before sending commands
 - Firestore security rules should restrict access to session data
+- Session codes expire after 24 hours and are freed when a session ends
+
+## Data Cleanup
+
+- Ending a session deletes all of its Firestore data (peers, ICE candidates, commands, recordings, timeline, and the session itself)
+- Every document also carries an `expiresAt` field (7 days), which deletes data of sessions that were never ended. This needs Firestore TTL policies, enabled once per project:
+
+  ```bash
+  tool/enable_firestore_ttl.sh multicam-studio
+  ```
+
+- The admin needs **delete** permission on these collections in the Firestore security rules
 
 ## Testing
 

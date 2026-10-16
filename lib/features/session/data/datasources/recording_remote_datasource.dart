@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
+import '../../../../core/constants/session_lifetime.dart';
 
 abstract interface class RecordingRemoteDataSource {
   Future<void> addRecording(String sessionId, Map<String, dynamic> data);
@@ -20,7 +21,10 @@ class FirebaseRecordingDataSource implements RecordingRemoteDataSource {
 
   @override
   Future<void> addRecording(String sessionId, Map<String, dynamic> data) =>
-      _col(sessionId).add(data);
+      _col(sessionId).add({
+        ...data,
+        FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+      });
 
   @override
   Stream<List<Map<String, dynamic>>> watchRecordings(String sessionId) =>

@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../../core/constants/firestore_constants.dart';
-import '../../../../core/constants/session_code_policy.dart';
+import '../../../../core/constants/session_lifetime.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../session/domain/entities/recording_profile.dart';
 
@@ -86,7 +86,10 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
   ) async {
     try {
       await _peerDoc(sessionId, peerId).set(
-        {FirestoreConstants.offer: data},
+        {
+          FirestoreConstants.offer: data,
+          FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+        },
         SetOptions(merge: true),
       );
     } on FirebaseException catch (e) {
@@ -102,7 +105,10 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
   ) async {
     try {
       await _peerDoc(sessionId, peerId).set(
-        {FirestoreConstants.answer: data},
+        {
+          FirestoreConstants.answer: data,
+          FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+        },
         SetOptions(merge: true),
       );
     } on FirebaseException catch (e) {
@@ -127,7 +133,10 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
     required bool isAdmin,
   }) async {
     try {
-      await _candidatesCollection(sessionId, peerId, isAdmin: isAdmin).add(data);
+      await _candidatesCollection(sessionId, peerId, isAdmin: isAdmin).add({
+        ...data,
+        FirestoreConstants.expiresAt: sessionDataExpiresAt(),
+      });
     } on FirebaseException catch (e) {
       throw FirestoreException(e.message ?? 'Firestore error');
     }
@@ -186,6 +195,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
           'deviceName': deviceName,
           'joinedAt': FieldValue.serverTimestamp(),
           FirestoreConstants.capabilities: capabilities,
+          FirestoreConstants.expiresAt: sessionDataExpiresAt(),
         },
         SetOptions(merge: true),
       );
