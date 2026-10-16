@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/services/clock_sync_service.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../services/render_service.dart';
 import '../../../session/domain/entities/peer_connection_state.dart';
@@ -238,6 +239,13 @@ class AdminController extends GetxController {
   Future<void> issueStartRecording() async {
     final s = session.value;
     if (s == null || !_isValidSession()) return;
+
+    // startSession kicks off clock sync without awaiting it. Execution times
+    // are sent in server time, so an unsynced admin would be off by its whole
+    // clock offset.
+    if (_clockController.syncQuality.value == SyncQuality.unsynced) {
+      await _clockController.sync();
+    }
 
     // One instant drives the timeline AND both delivery paths, so the render
     // offsets match when the cameras actually start recording.
