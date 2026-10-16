@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 
@@ -99,9 +100,21 @@ class AdminController extends GetxController {
   // Co-admin role tracking
   final coAdminPeerIds = RxSet<String>();
 
-  // Master Audio Camera: the peerId of the camera that records audio, '' for no
-  // audio from any camera, null when not yet selected (UI sets before recording).
+  // Audio source for the take: a camera's peerId (Master Audio Camera), '' for
+  // no audio, [adminMicSourceId] for Studio Audio Mode, or null when not yet
+  // selected (UI sets before recording).
   final masterAudioCameraId = Rx<String?>(null);
+
+  /// Studio Audio Mode: the admin device's mic records the sole audio track
+  /// and every camera records video only.
+  static const adminMicSourceId = '__admin_mic__';
+
+  bool get usesAdminMic => masterAudioCameraId.value == adminMicSourceId;
+
+  /// What cameras receive as `masterAudioCameraId`: in Studio Audio Mode no
+  /// camera is the audio source, which cameras understand as ''.
+  String? get _cameraAudioSourceId =>
+      usesAdminMic ? '' : masterAudioCameraId.value;
 
   // Camera capability discovery and profile selection
   final cameraCapabilities = <String, List<RecordingProfile>>{}.obs;
@@ -126,9 +139,13 @@ class AdminController extends GetxController {
   // Remote streams
   final _remoteStreams = <String, webrtc.MediaStream>{};
 
-  // Resolved path of master audio camera's downloaded MP4 (set during render).
-  // Kept as a field to share between _autoMerge and a future manual-trigger path.
-  String? _resolvedMasterAudioPath;
+  // Studio Audio Mode recording of the current take: the admin mic file, the
+  // wall-clock time of its first sample (t=0 of the file), and the pending
+  // native stop that finalizes it.
+  String? _adminAudioPath;
+  DateTime? _adminAudioStartedAt;
+  Future<void>? _adminAudioStop;
+  bool _adminAudioFinalized = false;
 
   // Auto-download + auto-merge state
   bool _autoDownloadEnabled = false;
@@ -258,6 +275,16 @@ class AdminController extends GetxController {
       await _clockController.sync();
     }
 
+    // Studio Audio Mode: start the admin mic before anything else, so a mic
+    // failure aborts the take instead of producing a silent video. The mic
+    // starts slightly before the cameras; the render aligns it using the
+    // recorded start time.
+    _adminAudioPath = null;
+    _adminAudioStartedAt = null;
+    _adminAudioStop = null;
+    _adminAudioFinalized = false;
+    if (usesAdminMic && !await _startAdminAudio()) return;
+
     // One instant drives the timeline AND both delivery paths, so the render
     // offsets match when the cameras actually start recording.
     final startAt = _commandExecuteAt();
@@ -288,10 +315,10 @@ class AdminController extends GetxController {
     }
     unawaited(_saveRecordingStateToDisk());
 
-    final masterCamId = masterAudioCameraId.value;
+    final masterCamId = _cameraAudioSourceId;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
-      if (masterCamId != null) 'masterAudioCameraId': masterCamId,
+      'masterAudioCameraId': ?masterCamId,
       if (profile != null) ...profile.toMap(),
     };
     await _issueTimedCommand(
@@ -316,11 +343,103 @@ class AdminController extends GetxController {
     unawaited(_saveRecordingStateToDisk());
 
     await _issueTimedCommand(s.sessionId, CommandType.stopRecording, stopAt);
+    if (_adminAudioPath != null && _adminAudioStop == null) {
+      // Keep the mic running until the cameras actually stop, plus a margin.
+      final delay = stopAt.difference(DateTime.now()) +
+          const Duration(milliseconds: 300);
+      _adminAudioStop = Future<void>.delayed(
+        delay.isNegative ? Duration.zero : delay,
+        _stopAdminAudio,
+      );
+    }
     isRecording.value = false;
     _recordingTimer?.cancel();
     _recordingTimer = null;
     recordingSeconds.value = 0;
     _armAutoDownload();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Studio Audio Mode — admin mic recording
+  // ---------------------------------------------------------------------------
+
+  Future<bool> _startAdminAudio() async {
+    if (!await Permission.microphone.request().isGranted) {
+      Get.snackbar(
+        'Microphone needed',
+        'Allow microphone access to record with Admin Mic.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
+    }
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final path =
+          '${dir.path}/admin_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      final startedMs = await _channel.invokeMethod<int>(
+        'startAdminAudioRecording',
+        {'outputPath': path},
+      );
+      _adminAudioPath = path;
+      _adminAudioStartedAt = startedMs != null
+          ? DateTime.fromMillisecondsSinceEpoch(startedMs)
+          : DateTime.now();
+      dev.log('admin mic started → $path', name: 'AdminController');
+      return true;
+    } catch (e) {
+      dev.log('_startAdminAudio failed: $e', name: 'AdminController');
+      Get.snackbar(
+        'Admin Mic failed',
+        'Could not start the microphone. Recording was not started.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
+    }
+  }
+
+  Future<void> _stopAdminAudio() async {
+    try {
+      await _channel.invokeMethod<void>('stopAdminAudioRecording');
+      _adminAudioFinalized = true;
+      unawaited(_saveRecordingStateToDisk());
+    } catch (e) {
+      dev.log('_stopAdminAudio failed: $e', name: 'AdminController');
+    }
+  }
+
+  /// The audio track that replaces per-camera audio in the render, if any:
+  /// the admin mic file (Studio Audio Mode) or the master audio camera's
+  /// downloaded file. [startedAt] is the wall-clock time of the file's t=0.
+  ({String path, DateTime startedAt})? resolveRenderAudio() {
+    final startedAt = _recordingStartedAt;
+    if (startedAt == null) return null;
+
+    final adminPath = _adminAudioPath;
+    if (adminPath != null) {
+      final f = File(adminPath);
+      if (_adminAudioFinalized && f.existsSync() && f.lengthSync() > 0) {
+        return (path: adminPath, startedAt: _adminAudioStartedAt ?? startedAt);
+      }
+      dev.log('resolveRenderAudio: admin mic file unusable — rendering without it',
+          name: 'AdminController');
+      return null;
+    }
+
+    final masterCamId = masterAudioCameraId.value;
+    if (masterCamId == null || masterCamId.isEmpty || masterCamId == adminMicSourceId) {
+      return null;
+    }
+    final masterInfo = recordings.firstWhereOrNull((r) => r.peerId == masterCamId);
+    final path = masterInfo != null ? downloadedPaths[masterInfo.filename] : null;
+    if (path == null) {
+      dev.log('resolveRenderAudio: master camera ($masterCamId) file not available',
+          name: 'AdminController');
+      return null;
+    }
+    return (
+      path: path,
+      startedAt: _cameraRecordingStartAt[masterCamId] ?? startedAt,
+    );
   }
 
   /// Files arrive via Firestore → trigger downloads, then auto-merge.
@@ -514,6 +633,11 @@ class AdminController extends GetxController {
     final events = List<SwitchEvent>.from(switchHistory);
     final totalMs = stoppedAt.difference(startedAt).inMilliseconds.clamp(0, 999999);
     final segments = <Map<String, dynamic>>[];
+    // Where the audio file's t=0 sits on the take timeline. The admin mic
+    // starts before the take (negative), a late-joining master camera after.
+    final audio = resolveRenderAudio();
+    final audioOffsetMs =
+        audio == null ? 0 : audio.startedAt.difference(startedAt).inMilliseconds;
 
     for (var i = 0; i < events.length; i++) {
       final peerId = events[i].peerId;
@@ -538,7 +662,7 @@ class AdminController extends GetxController {
         'inputPath': path,
         'startMs': fileStartMs,
         'durationMs': fileDurationMs,
-        'adminAudioStartMs': effectiveStartMs,
+        'adminAudioStartMs': max(0, effectiveStartMs - audioOffsetMs),
       });
     }
 
@@ -614,6 +738,9 @@ class AdminController extends GetxController {
       sources.add(RenderSource(filename: filename, label: label, path: path));
     }
 
+    // The admin mic file must be finalized before it can be read.
+    await _adminAudioStop;
+
     // Build timeline segments
     final segments = buildRenderSegments();
     if (segments.isEmpty) {
@@ -621,30 +748,15 @@ class AdminController extends GetxController {
       return;
     }
 
-    // Resolve the master audio camera's downloaded file, if one was selected.
     // VideoRenderService reads audio from this file (ignoring per-camera audio
-    // tracks) so the master camera's continuous audio is preserved across cuts.
-    _resolvedMasterAudioPath = null;
-    final masterCamId = masterAudioCameraId.value;
-    if (masterCamId != null && masterCamId.isNotEmpty) {
-      final masterInfo = recordings.firstWhereOrNull((r) => r.peerId == masterCamId);
-      if (masterInfo != null) {
-        _resolvedMasterAudioPath = downloadedPaths[masterInfo.filename];
-        if (_resolvedMasterAudioPath == null) {
-          dev.log('_autoMerge: master camera ($masterCamId) file not downloaded — merging without audio override',
-              name: 'AdminController');
-        }
-      } else {
-        dev.log('_autoMerge: master camera ($masterCamId) has no recording info',
-            name: 'AdminController');
-      }
-    }
+    // tracks) so one continuous audio track is preserved across cuts.
+    final audio = resolveRenderAudio();
 
     // Trigger render via RenderService and navigate to the render page so the
     // user can see progress. The RenderService is a GetxService that lives for
     // the app lifetime, so the render continues even if the user navigates away.
     final renderService = Get.find<RenderService>();
-    renderService.prepare(sources, segments: segments, adminAudioPath: _resolvedMasterAudioPath);
+    renderService.prepare(sources, segments: segments, adminAudioPath: audio?.path);
     Get.toNamed<void>('/admin/render');
     await renderService.startRender();
     dev.log('_autoMerge: render completed', name: 'AdminController');
@@ -705,7 +817,10 @@ class AdminController extends GetxController {
     activePeerId.value = null;
     isRecording.value = false;
     masterAudioCameraId.value = null;
-    _resolvedMasterAudioPath = null;
+    _adminAudioPath = null;
+    _adminAudioStartedAt = null;
+    _adminAudioStop = null;
+    _adminAudioFinalized = false;
     cameraCapabilities.clear();
     compatibleProfiles.clear();
     selectedProfile.value = null;
@@ -794,10 +909,10 @@ class AdminController extends GetxController {
     final startAt = _commandExecuteAt();
     _cameraRecordingStartAt[peerId] = startAt;
     unawaited(_saveRecordingStateToDisk());
-    final masterCamId = masterAudioCameraId.value;
+    final masterCamId = _cameraAudioSourceId;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
-      if (masterCamId != null) 'masterAudioCameraId': masterCamId,
+      'masterAudioCameraId': ?masterCamId,
       if (profile != null) ...profile.toMap(),
     };
     await _issueTimedCommand(
@@ -1020,6 +1135,9 @@ class AdminController extends GetxController {
           'cameraStartAtMs': _cameraRecordingStartAt
               .map((peerId, t) => MapEntry(peerId, t.millisecondsSinceEpoch)),
           'masterAudioCameraId': masterAudioCameraId.value,
+          'adminAudioPath': _adminAudioPath,
+          'adminAudioStartedAtMs': _adminAudioStartedAt?.millisecondsSinceEpoch,
+          'adminAudioFinalized': _adminAudioFinalized,
           'rendered': _recordingRendered,
         },
       }));
@@ -1071,6 +1189,22 @@ class AdminController extends GetxController {
           ),
         );
       masterAudioCameraId.value = rec['masterAudioCameraId'] as String?;
+      // An admin mic file is only usable if its muxer was stopped before the
+      // crash; a file cut off mid-write is unreadable and would fail the
+      // render, so that take renders without audio instead.
+      _adminAudioPath = rec['adminAudioPath'] as String?;
+      final adminAudioStartedAtMs = (rec['adminAudioStartedAtMs'] as num?)?.toInt();
+      _adminAudioStartedAt = adminAudioStartedAtMs != null
+          ? DateTime.fromMillisecondsSinceEpoch(adminAudioStartedAtMs)
+          : null;
+      _adminAudioFinalized = rec['adminAudioFinalized'] == true;
+      if (!_adminAudioFinalized) {
+        // Also keeps the stop below from scheduling a native stop, which
+        // would mark the cut-off file as finalized.
+        _adminAudioPath = null;
+        _adminAudioStartedAt = null;
+      }
+      _adminAudioStop = null;
       _autoMergeStarted = false;
 
       // Needed for the stop command and for telling this take's recordings

@@ -922,10 +922,21 @@ class _AudioSourceSection extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Text(
-            'One camera records audio for the final mix. Others record video only.',
+            'One source records audio for the final mix. Cameras that are not '
+            'the source record video only.',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
           const SizedBox(height: 12),
+          // Studio Audio Mode — this device's mic (or a connected mic)
+          _AudioSourceTile(
+            icon: Icons.settings_voice,
+            label: 'Admin Mic (Studio)',
+            subtitle: 'This device records the audio. All cameras record video only',
+            isSelected: selectedId == AdminController.adminMicSourceId,
+            isLocked: isLocked,
+            onTap: () => controller.masterAudioCameraId.value =
+                AdminController.adminMicSourceId,
+          ),
           // "No Audio" option
           _AudioSourceTile(
             icon: Icons.mic_off,

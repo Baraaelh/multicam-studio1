@@ -40,6 +40,14 @@ class AdminAudioRecorder(private val outputPath: String) {
     private var firstAudioPtsUs = Long.MIN_VALUE
     @Volatile private var isRunning = false
 
+    /**
+     * Wall-clock time (System.currentTimeMillis) of the first captured sample,
+     * i.e. t=0 of the output file. Dart uses it to align this audio with the
+     * camera recordings.
+     */
+    var captureStartEpochMs = 0L
+        private set
+
     private val audioThread = HandlerThread("AdminAud").also { it.start() }
     private val audioHandler = Handler(audioThread.looper)
     private val audioBufInfo = MediaCodec.BufferInfo()
@@ -50,9 +58,8 @@ class AdminAudioRecorder(private val outputPath: String) {
 
         val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_CONFIG, AUDIO_FORMAT)
         if (minBuf <= 0) {
-            Log.e(TAG, "AudioRecord params unsupported")
             muxer?.release(); muxer = null
-            return
+            throw IOException("AudioRecord params unsupported on this device")
         }
         val bufSize = maxOf(minBuf, AUDIO_SAMPLE_RATE / 10 * 2) // ≥ 100 ms
 
@@ -79,6 +86,7 @@ class AdminAudioRecorder(private val outputPath: String) {
         audioRecord = ar
         isRunning = true
         ar.startRecording()
+        captureStartEpochMs = System.currentTimeMillis()
         Log.d(TAG, "started → $outputPath")
         audioHandler.post { captureLoop(ar, aenc, bufSize) }
     }
@@ -170,6 +178,7 @@ class AdminAudioRecorder(private val outputPath: String) {
             }
 
             onDone()
+            audioThread.quitSafely()
         }
     }
 }

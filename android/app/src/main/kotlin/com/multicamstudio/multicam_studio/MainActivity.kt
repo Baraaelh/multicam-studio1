@@ -206,7 +206,7 @@ class MainActivity : FlutterActivity() {
                             rec.start()
                             adminAudioRecorder = rec
                             Log.d(tag, "startAdminAudioRecording OK → $outputPath")
-                            result.success(null)
+                            result.success(rec.captureStartEpochMs)
                         } catch (e: Exception) {
                             Log.e(tag, "startAdminAudioRecording failed: ${e.message}", e)
                             result.error("RECORD_FAILED", e.message, null)
