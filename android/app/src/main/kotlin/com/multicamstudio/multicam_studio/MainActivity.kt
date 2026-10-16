@@ -68,6 +68,7 @@ class MainActivity : FlutterActivity() {
                         if (outputPath == null) {
                             result.error("INVALID_ARGS", "Missing output path", null)
                         } else {
+                            VideoRenderService.resetCancel()
                             Thread {
                                 try {
                                     if (!segments.isNullOrEmpty()) {
@@ -77,12 +78,27 @@ class MainActivity : FlutterActivity() {
                                     }
                                     runOnUiThread { result.success(null) }
                                 } catch (e: Exception) {
-                                    runOnUiThread {
-                                        result.error("RENDER_FAILED", e.message, null)
+                                    // Check the flag rather than the exception type: muxer.stop()
+                                    // in the merge's finally block can throw and replace the
+                                    // RenderCancelledException.
+                                    if (VideoRenderService.isCancelRequested) {
+                                        Log.d(tag, "renderVideos cancelled — deleting partial output")
+                                        java.io.File(outputPath).delete()
+                                        runOnUiThread {
+                                            result.error("RENDER_CANCELLED", "Render cancelled", null)
+                                        }
+                                    } else {
+                                        runOnUiThread {
+                                            result.error("RENDER_FAILED", e.message, null)
+                                        }
                                     }
                                 }
                             }.start()
                         }
+                    }
+                    "cancelRender" -> {
+                        VideoRenderService.requestCancel()
+                        result.success(null)
                     }
                     "getRecordingCapabilities" -> {
                         try {
