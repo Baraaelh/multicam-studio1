@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Device logs / crash dumps (adb logcat output) — keep out of the repo
+crash_*.txt
+*_crash.txt
+*_dump.txt
+*.logcat
+
+# Gradle build output
+/android/build/
