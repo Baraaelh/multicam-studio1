@@ -101,8 +101,9 @@ class AdminController extends GetxController {
   final coAdminPeerIds = RxSet<String>();
 
   // Audio source for the take: a camera's peerId (Master Audio Camera), '' for
-  // no audio, [adminMicSourceId] for Studio Audio Mode, or null when not yet
-  // selected (UI sets before recording).
+  // no audio, [adminMicSourceId] for Studio Audio Mode, [followVideoSourceId]
+  // for audio that follows the cuts, or null when not yet selected (UI sets
+  // before recording).
   final masterAudioCameraId = Rx<String?>(null);
 
   /// Studio Audio Mode: the admin device's mic records the sole audio track
@@ -111,10 +112,18 @@ class AdminController extends GetxController {
 
   bool get usesAdminMic => masterAudioCameraId.value == adminMicSourceId;
 
+  /// Audio follows video: every camera records its own audio and each cut in
+  /// the render uses the audio of the camera on screen.
+  static const followVideoSourceId = '__follow_video__';
+
   /// What cameras receive as `masterAudioCameraId`: in Studio Audio Mode no
-  /// camera is the audio source, which cameras understand as ''.
-  String? get _cameraAudioSourceId =>
-      usesAdminMic ? '' : masterAudioCameraId.value;
+  /// camera is the audio source, which cameras understand as ''; when audio
+  /// follows video none is named (null), so every camera records audio.
+  String? get _cameraAudioSourceId => switch (masterAudioCameraId.value) {
+        adminMicSourceId => '',
+        followVideoSourceId => null,
+        final id => id,
+      };
 
   // Camera capability discovery and profile selection
   final cameraCapabilities = <String, List<RecordingProfile>>{}.obs;
@@ -426,7 +435,13 @@ class AdminController extends GetxController {
     }
 
     final masterCamId = masterAudioCameraId.value;
-    if (masterCamId == null || masterCamId.isEmpty || masterCamId == adminMicSourceId) {
+    // No single source: '' (no audio), admin mic (handled above, but unusable
+    // here), or audio follows video — the render then keeps each segment's
+    // own camera audio.
+    if (masterCamId == null ||
+        masterCamId.isEmpty ||
+        masterCamId == adminMicSourceId ||
+        masterCamId == followVideoSourceId) {
       return null;
     }
     final masterInfo = recordings.firstWhereOrNull((r) => r.peerId == masterCamId);

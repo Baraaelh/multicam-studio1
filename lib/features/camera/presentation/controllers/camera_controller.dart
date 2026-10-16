@@ -234,13 +234,14 @@ class CameraController extends GetxController {
       case CommandType.startRecording:
         isRecording.value = true;
         final masterAudioId = cmd.payload?['masterAudioCameraId'] as String?;
-        if (masterAudioId != null) {
-          // Master Audio Camera mode: video-only unless this camera is the
-          // designated audio source. Empty string means no audio from any camera.
-          isStudioMode.value = masterAudioId.isEmpty || masterAudioId != _payload?.peerId;
-        } else if (cmd.payload?['studioMode'] == true) {
-          isStudioMode.value = true;
-        }
+        // Decided per take: a previous take's choice must not carry over.
+        isStudioMode.value = masterAudioId != null
+            // Master Audio Camera mode: video-only unless this camera is the
+            // designated audio source. Empty string means no audio from any camera.
+            ? masterAudioId.isEmpty || masterAudioId != _payload?.peerId
+            // No audio source named: every camera records its own audio
+            // ("audio follows video").
+            : cmd.payload?['studioMode'] == true;
         final profile = _profileFromPayload(cmd.payload);
         unawaited(_startRecording(profile: profile));
       case CommandType.stopRecording:

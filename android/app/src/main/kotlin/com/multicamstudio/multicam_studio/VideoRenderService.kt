@@ -367,6 +367,12 @@ object VideoRenderService {
 
                     ext.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     val actualStartUs = if (ext.sampleTime >= 0) ext.sampleTime else 0L
+                    // The video starts at the preceding keyframe, so this segment
+                    // is longer than planned by the pre-roll. Everything else in
+                    // the segment (separate audio, output offsets) must use the
+                    // same length or audio drifts by the pre-roll at every cut.
+                    val preRollUs = startUs - actualStartUs
+                    val segmentLengthUs = endUs - actualStartUs
 
                     Log.d(TAG, "segment[$segIdx]: seekTo ${startUs / 1_000}ms → " +
                             "keyframe snap to ${actualStartUs / 1_000}ms " +
@@ -402,6 +408,12 @@ object VideoRenderService {
                                 if (rawTime > maxVideoUs) maxVideoUs = rawTime
                             }
                             trackIndex == inAudioTrack && muxAudioTrack >= 0 -> {
+                                // Interleaved audio just before the keyframe would land
+                                // before this segment's offset, overlapping the previous one.
+                                if (rawTime < actualStartUs) {
+                                    ext.advance()
+                                    continue
+                                }
                                 if (rawTime >= endUs) {
                                     audioExhausted = true
                                     ext.advance()
@@ -432,12 +444,12 @@ object VideoRenderService {
                         ext.advance()
                     }
 
-                    videoOutputOffsetUs += (maxVideoUs - actualStartUs) + 33_333L
-
-                    // Studio Mode: extract admin audio for this segment's time window.
+                    // Studio Mode: extract admin audio for this segment's time window,
+                    // including the same pre-roll as the video.
                     if (adminAudioExt != null && muxAudioTrack >= 0) {
-                        adminAudioExt.seekTo(adminStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                        val adminActualStartUs = if (adminAudioExt.sampleTime >= 0) adminAudioExt.sampleTime else adminStartUs
+                        val adminSeekUs = (adminStartUs - preRollUs).coerceAtLeast(0L)
+                        adminAudioExt.seekTo(adminSeekUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                        val adminActualStartUs = if (adminAudioExt.sampleTime >= 0) adminAudioExt.sampleTime else adminSeekUs
                         var maxAdminUs = adminActualStartUs
 
                         while (true) {
@@ -447,6 +459,8 @@ object VideoRenderService {
                             if (sampleSize < 0) break
                             val rawTime = adminAudioExt.sampleTime
                             if (rawTime >= adminEndUs) break
+                            // The seek can land a frame early; never spill into the next segment.
+                            if (rawTime - adminActualStartUs >= segmentLengthUs) break
 
                             val adjustedTime = (rawTime - adminActualStartUs) + audioOutputOffsetUs
                             if (rawTime > maxAdminUs) maxAdminUs = rawTime
@@ -459,12 +473,16 @@ object VideoRenderService {
                             adminAudioExt.advance()
                         }
 
-                        audioOutputOffsetUs += (maxAdminUs - adminActualStartUs) + 22_676L
                         Log.d(TAG, "segment[$segIdx]: admin audio snapMs=${adminActualStartUs / 1_000} " +
                                 "durMs=${(maxAdminUs - adminActualStartUs) / 1_000}")
-                    } else {
-                        audioOutputOffsetUs += (maxAudioUs - actualStartUs) + 22_676L
                     }
+
+                    // Advance both tracks by the segment's nominal length (every
+                    // written sample is < endUs, so the next segment never overlaps).
+                    // Using one shared length keeps audio and video in lockstep
+                    // across cuts instead of accumulating per-track rounding.
+                    videoOutputOffsetUs += segmentLengthUs
+                    audioOutputOffsetUs = videoOutputOffsetUs
 
                     Log.d(TAG, "segment[$segIdx]: done — " +
                             "videoDurMs=${(maxVideoUs - actualStartUs) / 1_000} " +
