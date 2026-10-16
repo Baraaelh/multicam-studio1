@@ -20,12 +20,17 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
   static const _channel =
       MethodChannel('com.multicamstudio.multicam_studio/camera_service');
 
-  static Map<String, dynamic> _buildConstraints(LensDirection lens) => {
+  static Map<String, dynamic> _buildConstraints(LensDirection lens, int maxW, int maxH) => {
         'video': {
           'facingMode': lens == LensDirection.back ? 'environment' : 'user',
-          'width': {'ideal': 1280, 'min': 720},
-          'height': {'ideal': 720, 'min': 480},
-          'frameRate': {'ideal': 30, 'max': 30},
+          'mandatory': {
+            'minFrameRate': '30',
+          },
+          'ideal': {
+            'width': maxW.toString(),
+            'height': maxH.toString(),
+          },
+          'optional': [],
         },
         'audio': {
           'echoCancellation': true,
@@ -62,8 +67,20 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
   }
 
   @override
-  Future<webrtc.MediaStream> getUserMedia(LensDirection lens) =>
-      webrtc.navigator.mediaDevices.getUserMedia(_buildConstraints(lens));
+  Future<webrtc.MediaStream> getUserMedia(LensDirection lens) async {
+    final caps = await getRecordingCapabilities();
+    int maxW = 1280;
+    int maxH = 720;
+    for (final cap in caps) {
+      final w = cap['width'] as int;
+      final h = cap['height'] as int;
+      if (w * h > maxW * maxH) {
+        maxW = w;
+        maxH = h;
+      }
+    }
+    return webrtc.navigator.mediaDevices.getUserMedia(_buildConstraints(lens, maxW, maxH));
+  }
 
   @override
   Future<void> disposeStream(webrtc.MediaStream stream) async {

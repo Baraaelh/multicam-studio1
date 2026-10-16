@@ -22,6 +22,12 @@ class WebRtcService {
     'sdpSemantics': 'unified-plan',
   };
 
+  static const Map<String, dynamic> _peerConstraints = {
+    'optional': [
+      {'googCpuOveruseDetection': false},
+    ],
+  };
+
   final _connections = <String, webrtc.RTCPeerConnection>{};
   final _dataChannels = <String, webrtc.RTCDataChannel>{};
 
@@ -46,7 +52,7 @@ class WebRtcService {
   Future<webrtc.RTCPeerConnection> _getOrCreate(String peerId) async {
     if (_connections.containsKey(peerId)) return _connections[peerId]!;
 
-    final pc = await webrtc.createPeerConnection(_peerConfig);
+    final pc = await webrtc.createPeerConnection(_peerConfig, _peerConstraints);
 
     pc.onIceCandidate = (c) {
       if (c.candidate != null && _isHostCandidate(c)) {
@@ -167,7 +173,19 @@ class WebRtcService {
   ) async {
     final pc = await _getOrCreate(peerId);
     for (final track in stream.getTracks()) {
-      await pc.addTrack(track, stream);
+      final sender = await pc.addTrack(track, stream);
+      if (track.kind == 'video') {
+        try {
+          final params = sender.parameters;
+          params.degradationPreference = webrtc.RTCDegradationPreference.MAINTAIN_RESOLUTION;
+          if (params.encodings?.isNotEmpty == true) {
+            params.encodings!.first.maxBitrate = 4000000; // 4 Mbps for LAN
+          }
+          await sender.setParameters(params);
+        } catch (_) {
+          // Fallback if not supported on this platform/version
+        }
+      }
     }
   }
 

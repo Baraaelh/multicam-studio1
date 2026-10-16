@@ -86,6 +86,23 @@ class RecordingService {
     }
   }
 
+  /// Moves the recorder's VideoSink from the current track to the new track's
+  /// video track. Must be called after lens switch so the recorder keeps
+  /// receiving frames from the new camera.
+  Future<void> reattachSink(webrtc.MediaStream stream) async {
+    if (!_isRecording) return;
+    final videoTrack = stream.getVideoTracks().firstOrNull;
+    if (videoTrack == null) return;
+    try {
+      await _channel.invokeMethod<void>('reattachSink', {
+        'trackId': videoTrack.id,
+      });
+      dev.log('reattachSink — recorder moved to track ${videoTrack.id}', name: _tag);
+    } catch (e) {
+      dev.log('reattachSink failed: $e', name: _tag);
+    }
+  }
+
   /// Stops recording and returns the written [File], or null if nothing was recorded.
   Future<File?> stopRecording() async {
     if (!_isRecording) return null;

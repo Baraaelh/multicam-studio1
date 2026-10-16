@@ -131,7 +131,17 @@ void _prepareAndNavigate(AdminController ctrl) {
 
   final segments = ctrl.buildRenderSegments();
 
-  Get.find<RenderService>().prepare(sources, segments: segments, adminAudioPath: ctrl.adminAudioPath);
+  // Resolve master audio camera path the same way _autoMerge does.
+  String? masterAudioPath;
+  final masterCamId = ctrl.masterAudioCameraId.value;
+  if (masterCamId != null && masterCamId.isNotEmpty) {
+    final masterInfo = ctrl.recordings.firstWhereOrNull((r) => r.peerId == masterCamId);
+    if (masterInfo != null) {
+      masterAudioPath = ctrl.downloadedPaths[masterInfo.filename];
+    }
+  }
+
+  Get.find<RenderService>().prepare(sources, segments: segments, adminAudioPath: masterAudioPath);
   Get.back<void>();
   Get.toNamed<void>('/admin/render');
 }

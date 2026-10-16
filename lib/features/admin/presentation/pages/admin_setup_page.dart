@@ -165,7 +165,6 @@ class _BottomActions extends StatelessWidget {
     return Obx(() {
       final s = controller.session.value;
       final isStarting = controller.isStarting.value;
-      final isStudioMode = controller.isStudioMode.value;
 
       return SafeArea(
         child: Padding(
@@ -173,16 +172,6 @@ class _BottomActions extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (s != null)
-                SwitchListTile(
-                  title: const Text('Studio Audio Mode'),
-                  subtitle: const Text(
-                    'Admin mic replaces all camera audio in the render',
-                  ),
-                  value: isStudioMode,
-                  onChanged: (_) => controller.toggleStudioMode(),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
               FilledButton.icon(
                 onPressed: (s != null && !isStarting)
                     ? () async {

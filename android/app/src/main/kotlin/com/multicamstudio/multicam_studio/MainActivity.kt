@@ -5,6 +5,8 @@ import android.content.Intent
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -231,6 +233,23 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
+                    "reattachSink" -> {
+                        val trackId = call.argument<String>("trackId")
+                        if (trackId == null) { result.success(null); return@setMethodCallHandler }
+                        val plugin = FlutterWebRTCPlugin.sharedSingleton
+                        if (plugin == null) { result.success(null); return@setMethodCallHandler }
+                        val localTrack = plugin.getLocalTrack(trackId)
+                        val newVideoTrack = localTrack?.track as? VideoTrack
+                        val sink = currentRecorder
+                        val oldTrack = currentRecorderTrack
+                        if (sink != null && newVideoTrack != null) {
+                            oldTrack?.removeSink(sink)
+                            newVideoTrack.addSink(sink)
+                            currentRecorderTrack = newVideoTrack
+                            Log.d(tag, "reattachSink: recorder moved to ${newVideoTrack.id()}")
+                        }
+                        result.success(null)
+                    }
                     "saveToPublicStorage" -> {
                         val sourcePath = call.argument<String>("sourcePath")
                         val filename = call.argument<String>("filename")
@@ -272,6 +291,40 @@ class MainActivity : FlutterActivity() {
             // so higher values would not reflect achievable recording frame rates.
             val targetFps = listOf(30)
 
+            // Query MediaCodec AVC encoder capabilities BEFORE probing camera sizes.
+            // Camera2 SurfaceTexture sizes describe what the sensor can *capture*; they
+            // say nothing about what the AVC *encoder* can encode. On mid-range MediaTek
+            // SoCs (e.g. Helio G90T on Redmi Note 8 Pro) the sensor outputs 4K but the
+            // OMX.MTK.VIDEO.ENCODER.AVC encoder tops out at 1080p. Without this check
+            // the admin can select 4K → encoder gets ERROR(0x8000100b) → IllegalState
+            // in drainVideoEncoder → FATAL EXCEPTION: SurfVid.
+            var encoderName: String? = null
+            val avcEncoderCaps: MediaCodecInfo.VideoCapabilities? = try {
+                val allCodecs = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                val hwEnc = if (Build.VERSION.SDK_INT >= 29) {
+                    allCodecs.firstOrNull { info ->
+                        info.isEncoder && info.isHardwareAccelerated &&
+                        info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) }
+                    }
+                } else {
+                    allCodecs.firstOrNull { info ->
+                        info.isEncoder &&
+                        !info.name.lowercase().startsWith("omx.google.") &&
+                        info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) }
+                    }
+                }
+                // Fall back to any AVC encoder if no hardware encoder is found.
+                val enc = hwEnc ?: allCodecs.firstOrNull { info ->
+                    info.isEncoder &&
+                    info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) }
+                }
+                encoderName = enc?.name
+                enc?.getCapabilitiesForType("video/avc")?.videoCapabilities
+            } catch (e: Exception) {
+                Log.w(tag, "buildRecordingCapabilities: AVC caps query failed: ${e.message}")
+                null
+            }
+
             val seen = mutableSetOf<Triple<Int, Int, Int>>()
 
             for (id in cameraManager.cameraIdList) {
@@ -298,6 +351,23 @@ class MainActivity : FlutterActivity() {
 
                 for ((w, h) in targetSizes) {
                     if ((w to h) !in supportedSizes) continue
+                    // Skip any resolution the AVC encoder cannot actually encode.
+                    if (avcEncoderCaps != null && !avcEncoderCaps.isSizeSupported(w, h)) {
+                        Log.d(tag, "buildRecordingCapabilities: skip ${w}×${h} — AVC encoder reports unsupported")
+                        continue
+                    }
+                    // MediaTek hardware AVC encoders (e.g., POCO M5s / Redmi Note 8 Pro)
+                    // incorrectly report isSizeSupported(1920, 1080) == true, but throw
+                    // IllegalStateException inside dequeueOutputBuffer when fed 1080p frames.
+                    // This includes OMX.MTK.* and c2.mtk.* encoders, but to be absolutely safe
+                    // against Xiaomi encoder renaming, we check the Build properties.
+                    val isMtk = encoderName?.contains("mtk", ignoreCase = true) == true ||
+                                Build.HARDWARE.lowercase().startsWith("mt") ||
+                                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && Build.SOC_MANUFACTURER.lowercase().contains("mediatek"))
+                    if (w > 1280 && isMtk) {
+                        Log.d(tag, "buildRecordingCapabilities: skip ${w}×${h} — MTK encoder known to crash at >720p")
+                        continue
+                    }
                     for (fps in targetFps) {
                         if (fps !in supportedFixedFps) continue
                         val key = Triple(w, h, fps)

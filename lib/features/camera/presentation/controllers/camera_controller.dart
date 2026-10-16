@@ -120,6 +120,13 @@ class CameraController extends GetxController {
       );
       return;
     }
+    // If already in a session, tear it down first. Calling getUserMedia() while
+    // the camera is still open triggers a Camera2 CAMERA_IN_USE exception in the
+    // native WebRTC capturer, which aborts the capture thread (SIGABRT) and kills
+    // the app before any Dart try/catch can handle it.
+    if (_payload != null) {
+      await disconnect();
+    }
     _payload = payload;
     slotLabel.value = payload.label;
     sessionPin.value = payload.pin.isNotEmpty ? payload.pin : null;
@@ -226,7 +233,14 @@ class CameraController extends GetxController {
     switch (cmd.type) {
       case CommandType.startRecording:
         isRecording.value = true;
-        if (cmd.payload?['studioMode'] == true) isStudioMode.value = true;
+        final masterAudioId = cmd.payload?['masterAudioCameraId'] as String?;
+        if (masterAudioId != null) {
+          // Master Audio Camera mode: video-only unless this camera is the
+          // designated audio source. Empty string means no audio from any camera.
+          isStudioMode.value = masterAudioId.isEmpty || masterAudioId != _payload?.peerId;
+        } else if (cmd.payload?['studioMode'] == true) {
+          isStudioMode.value = true;
+        }
         final profile = _profileFromPayload(cmd.payload);
         unawaited(_startRecording(profile: profile));
       case CommandType.stopRecording:
@@ -428,6 +442,13 @@ class CameraController extends GetxController {
 
     _localStream = result.valueOrNull!;
     localRenderer.srcObject = _localStream;
+
+    // Move the recorder's VideoSink to the new track so frames keep flowing
+    // into the MP4 after the lens switch. Without this, the recorder remains
+    // attached to the old (now stopped) track and records silence+black.
+    if (isRecording.value) {
+      await _recordingService.reattachSink(_localStream!);
+    }
 
     final videoTrack = _localStream!.getVideoTracks().firstOrNull;
     if (videoTrack != null) {

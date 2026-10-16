@@ -67,6 +67,9 @@ class I420VideoRecorder(
     @Volatile private var audioFormatReady = false
     @Volatile private var audioAvailable = false
     @Volatile private var rotationSet = false
+    // Set when dequeueOutputBuffer() throws IllegalStateException (codec error state).
+    // Prevents FATAL EXCEPTION on the I420Vid HandlerThread.
+    @Volatile private var encoderFailed = false
 
     // ── video ─────────────────────────────────────────────────────────────────
     private var videoEncoder: MediaCodec? = null
@@ -169,7 +172,10 @@ class I420VideoRecorder(
     // ── VideoSink ─────────────────────────────────────────────────────────────
 
     override fun onFrame(frame: VideoFrame) {
-        if (!isRunning.get()) { frame.release(); return }
+        // VideoSink.onFrame() receives a borrowed frame reference owned by the delivery chain
+        // (VideoProcessor). Do NOT call frame.release() here — that over-releases the refcount
+        // and crashes EglRenderer's EglThread when it tries to release its own retained copy.
+        if (!isRunning.get()) { return }
 
         val now = System.nanoTime()
         synchronized(profLock) {
@@ -182,6 +188,34 @@ class I420VideoRecorder(
         if (fc <= 5L) {
             Log.i(TAG, "DIAG frame #$fc ${frame.rotatedWidth}×${frame.rotatedHeight} thread=${Thread.currentThread().name}")
         }
+
+        // WebRTC camera tracks on Android 13+ deliver TextureBuffer (GPU OES texture).
+        // Calling TextureBuffer.toI420() on a thread without a current EGL context causes
+        // a native crash on some MediaTek / Android 16 devices. The WebRTC delivery thread
+        // always has a valid EGL context, so we convert here and post the I420Buffer.
+        if (frame.buffer is VideoFrame.TextureBuffer) {
+            // Retain explicitly before toI420(): toI420() posts its conversion lambda to
+            // the camera EGL handler via invokeAtFrontUninterruptibly(), blocking this
+            // thread. A concurrent release from WebRTC's EncoderQueue during that window
+            // can drop the refcount to 0, causing toI420()'s internal retain() to throw
+            // "retain() called on an object with refcount < 1" → SIGABRT on EncoderQueue.
+            frame.buffer.retain()
+            val i420 = frame.buffer.toI420()
+            frame.buffer.release()          // balance explicit retain
+            // Do NOT call frame.release() here. VideoSink.onFrame() receives a borrowed
+            // frame reference — the delivery chain (VideoProcessor) releases it after all
+            // sinks return. Releasing here causes VideoProcessor.onFrameCaptured:51 to
+            // throw "release() called on an object with refcount < 1" → SIGKILL.
+            if (i420 == null) {
+                Log.w(TAG, "TextureBuffer.toI420() null — skipping frame #$fc")
+                synchronized(profLock) { profFramesSkipped++ }
+                return
+            }
+            val i420Frame = VideoFrame(i420, frame.rotation, frame.timestampNs)
+            videoHandler.post { processVideoFrame(i420Frame) }
+            return
+        }
+
         frame.retain()
         videoHandler.post { processVideoFrame(frame) }
     }
@@ -204,9 +238,26 @@ class I420VideoRecorder(
             // KEY_I_FRAME_INTERVAL=0 already makes every frame a keyframe, so
             // the container codec config is sufficient for random-access decoding.
         }
+        val isMtk = Build.HARDWARE.lowercase().startsWith("mt") ||
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && Build.SOC_MANUFACTURER.lowercase().contains("mediatek"))
+
         val tCreate = System.nanoTime()
-        videoEncoder = MediaCodec.createEncoderByType(videoMime).also {
-            Log.i(TAG, "DIAG createEncoderByType: ${(System.nanoTime() - tCreate) / 1_000_000L}ms → ${it.name} isHW=${isHwEncoder(it.name)}")
+        videoEncoder = if (isMtk) {
+            try {
+                Log.i(TAG, "DIAG MTK device detected — forcing software encoder to avoid HW overload")
+                try {
+                    MediaCodec.createByCodecName("c2.android.avc.encoder")
+                } catch (e: Exception) {
+                    MediaCodec.createByCodecName("OMX.google.h264.encoder")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "DIAG fallback to default encoder: ${e.message}")
+                MediaCodec.createEncoderByType(videoMime)
+            }
+        } else {
+            MediaCodec.createEncoderByType(videoMime)
+        }.also {
+            Log.i(TAG, "DIAG encoder created: ${(System.nanoTime() - tCreate) / 1_000_000L}ms → ${it.name} isHW=${isHwEncoder(it.name)}")
             val tConf = System.nanoTime()
             it.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             Log.i(TAG, "DIAG encoder configure(): ${(System.nanoTime() - tConf) / 1_000_000L}ms")
@@ -249,6 +300,8 @@ class I420VideoRecorder(
         var wasDropped      = false
 
         try {
+            if (encoderFailed) return
+
             // ── [2] I420 conversion ───────────────────────────────────────────
             val t2 = System.nanoTime()
             val i420 = frame.buffer.toI420()
@@ -441,6 +494,7 @@ class I420VideoRecorder(
     }
 
     private fun drainVideoEncoder(endOfStream: Boolean) {
+        if (encoderFailed) return
         val enc = videoEncoder ?: return
         val mux = muxer ?: return
         var eosRetries = 0
@@ -454,7 +508,15 @@ class I420VideoRecorder(
         while (true) {
             // ── [6] Encoder output wait ────────────────────────────────────────
             val tDq = System.nanoTime()
-            val status = enc.dequeueOutputBuffer(videoBufInfo, if (endOfStream) 50_000L else 5_000L)
+            val status: Int
+            try {
+                status = enc.dequeueOutputBuffer(videoBufInfo, if (endOfStream) 50_000L else 5_000L)
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "drainVideoEncoder: codec in error state — aborting: ${e.message}")
+                encoderFailed = true
+                isRunning.set(false)
+                return
+            }
             localEncodeWaitNs += System.nanoTime() - tDq
 
             when (status) {
@@ -801,12 +863,16 @@ class I420VideoRecorder(
             // ── video EOS + drain ──────────────────────────────────────────
             try {
                 val enc = videoEncoder
+                videoEncoder = null  // null early to prevent double-release on any path
                 if (enc != null) {
-                    val eosIdx = enc.dequeueInputBuffer(50_000L)
-                    if (eosIdx >= 0) enc.queueInputBuffer(eosIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                    else Log.w(TAG, "video: could not get EOS input buffer")
-                    drainVideoEncoder(true)
-                    enc.stop(); enc.release(); videoEncoder = null
+                    if (!encoderFailed) {
+                        val eosIdx = enc.dequeueInputBuffer(50_000L)
+                        if (eosIdx >= 0) enc.queueInputBuffer(eosIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        else Log.w(TAG, "video: could not get EOS input buffer")
+                        drainVideoEncoder(true)
+                    }
+                    try { enc.stop() } catch (_: Exception) {}
+                    enc.release()
                 }
             } catch (e: Exception) { Log.e(TAG, "video stop error: ${e.message}", e) }
 

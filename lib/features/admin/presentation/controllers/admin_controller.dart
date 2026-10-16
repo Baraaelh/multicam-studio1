@@ -98,8 +98,9 @@ class AdminController extends GetxController {
   // Co-admin role tracking
   final coAdminPeerIds = RxSet<String>();
 
-  // Studio Audio Mode
-  final isStudioMode = false.obs;
+  // Master Audio Camera: the peerId of the camera that records audio, '' for no
+  // audio from any camera, null when not yet selected (UI sets before recording).
+  final masterAudioCameraId = Rx<String?>(null);
 
   // Camera capability discovery and profile selection
   final cameraCapabilities = <String, List<RecordingProfile>>{}.obs;
@@ -120,8 +121,9 @@ class AdminController extends GetxController {
   // Remote streams
   final _remoteStreams = <String, webrtc.MediaStream>{};
 
-  // Studio Audio Mode: path to admin's audio-only recording, or null.
-  String? _adminAudioPath;
+  // Resolved path of master audio camera's downloaded MP4 (set during render).
+  // Kept as a field to share between _autoMerge and a future manual-trigger path.
+  String? _resolvedMasterAudioPath;
 
   // Auto-download + auto-merge state
   bool _autoDownloadEnabled = false;
@@ -151,8 +153,6 @@ class AdminController extends GetxController {
   }
 
   String get adminId => _adminId;
-  String? get adminAudioPath => _adminAudioPath;
-  void toggleStudioMode() => isStudioMode.toggle();
 
   /// Verifies that the current session belongs to this admin before sending
   /// any commands. Prevents a stale or hijacked session from being controlled.
@@ -264,23 +264,10 @@ class AdminController extends GetxController {
           ));
     }
 
-    if (isStudioMode.value) {
-      final dir = await getApplicationDocumentsDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      _adminAudioPath = '${dir.path}/admin_audio_$timestamp.mp4';
-      try {
-        await _channel.invokeMethod<void>('startAdminAudioRecording', {
-          'outputPath': _adminAudioPath,
-        });
-      } catch (e) {
-        dev.log('startAdminAudioRecording failed: $e', name: 'AdminController');
-        _adminAudioPath = null;
-      }
-    }
-
+    final masterCamId = masterAudioCameraId.value;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
-      if (isStudioMode.value) 'studioMode': true,
+      if (masterCamId != null) 'masterAudioCameraId': masterCamId,
       if (profile != null) ...profile.toMap(),
     };
     final commandId = await _clockController.issueCommand(
@@ -317,13 +304,6 @@ class AdminController extends GetxController {
     );
     if (stopId != null) {
       _sendLanCommand(stopId, CommandType.stopRecording);
-    }
-    if (isStudioMode.value) {
-      try {
-        await _channel.invokeMethod<void>('stopAdminAudioRecording');
-      } catch (e) {
-        dev.log('stopAdminAudioRecording failed: $e', name: 'AdminController');
-      }
     }
     isRecording.value = false;
     _recordingTimer?.cancel();
@@ -626,11 +606,30 @@ class AdminController extends GetxController {
       return;
     }
 
+    // Resolve the master audio camera's downloaded file, if one was selected.
+    // VideoRenderService reads audio from this file (ignoring per-camera audio
+    // tracks) so the master camera's continuous audio is preserved across cuts.
+    _resolvedMasterAudioPath = null;
+    final masterCamId = masterAudioCameraId.value;
+    if (masterCamId != null && masterCamId.isNotEmpty) {
+      final masterInfo = recordings.firstWhereOrNull((r) => r.peerId == masterCamId);
+      if (masterInfo != null) {
+        _resolvedMasterAudioPath = downloadedPaths[masterInfo.filename];
+        if (_resolvedMasterAudioPath == null) {
+          dev.log('_autoMerge: master camera ($masterCamId) file not downloaded — merging without audio override',
+              name: 'AdminController');
+        }
+      } else {
+        dev.log('_autoMerge: master camera ($masterCamId) has no recording info',
+            name: 'AdminController');
+      }
+    }
+
     // Trigger render via RenderService and navigate to the render page so the
     // user can see progress. The RenderService is a GetxService that lives for
     // the app lifetime, so the render continues even if the user navigates away.
     final renderService = Get.find<RenderService>();
-    renderService.prepare(sources, segments: segments, adminAudioPath: _adminAudioPath);
+    renderService.prepare(sources, segments: segments, adminAudioPath: _resolvedMasterAudioPath);
     Get.toNamed<void>('/admin/render');
     await renderService.startRender();
     dev.log('_autoMerge: render completed', name: 'AdminController');
@@ -690,8 +689,8 @@ class AdminController extends GetxController {
     sessionCode.value = '';
     activePeerId.value = null;
     isRecording.value = false;
-    isStudioMode.value = false;
-    _adminAudioPath = null;
+    masterAudioCameraId.value = null;
+    _resolvedMasterAudioPath = null;
     cameraCapabilities.clear();
     compatibleProfiles.clear();
     selectedProfile.value = null;
@@ -779,9 +778,10 @@ class AdminController extends GetxController {
     if (!_isValidSession()) return;
     const bufferMs = 1000;
     _cameraRecordingStartAt[peerId] = DateTime.now().add(const Duration(milliseconds: 200));
+    final masterCamId = masterAudioCameraId.value;
     final profile = selectedProfile.value;
     final payload = <String, dynamic>{
-      if (isStudioMode.value) 'studioMode': true,
+      if (masterCamId != null) 'masterAudioCameraId': masterCamId,
       if (profile != null) ...profile.toMap(),
     };
     final commandId = await _clockController.issueCommand(

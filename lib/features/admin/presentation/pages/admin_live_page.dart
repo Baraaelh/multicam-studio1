@@ -607,6 +607,18 @@ class _CameraThumbnail extends StatelessWidget {
                         ),
                       ),
                     ),
+                  // Mic badge — shown when this camera is the master audio source
+                  Obx(() {
+                    final masterAudioId = ctrl.masterAudioCameraId.value ?? '';
+                    if (masterAudioId.isEmpty || masterAudioId != slot.peerId) {
+                      return const SizedBox.shrink();
+                    }
+                    return const Positioned(
+                      bottom: 4,
+                      right: 4,
+                      child: Icon(Icons.mic, color: Colors.greenAccent, size: 14),
+                    );
+                  }),
                   if (isCoAdmin)
                     Positioned(
                       top: 4,
@@ -860,6 +872,151 @@ class _ZoomButton extends StatelessWidget {
 // Quality picker bottom sheet — shown before recording starts
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Audio source selector — shown inside _QualityPickerSheet
+// ---------------------------------------------------------------------------
+
+class _AudioSourceSection extends StatelessWidget {
+  final AdminController controller;
+  const _AudioSourceSection({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final slots = controller.slots;
+      final selectedId = controller.masterAudioCameraId.value;
+      final isLocked = controller.isRecording.value;
+
+      // Auto-select first camera the first time the sheet opens.
+      if (selectedId == null && slots.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (controller.masterAudioCameraId.value == null) {
+            controller.masterAudioCameraId.value = slots.first.peerId;
+          }
+        });
+      }
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.mic, color: Colors.white70, size: 16),
+              const SizedBox(width: 8),
+              const Text(
+                'Audio Source',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (isLocked) ...[
+                const SizedBox(width: 8),
+                const Text(
+                  '(locked during recording)',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'One camera records audio for the final mix. Others record video only.',
+            style: TextStyle(color: Colors.white38, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          // "No Audio" option
+          _AudioSourceTile(
+            icon: Icons.mic_off,
+            label: 'No Audio',
+            subtitle: 'All cameras record video only',
+            isSelected: selectedId == '',
+            isLocked: isLocked,
+            onTap: () => controller.masterAudioCameraId.value = '',
+          ),
+          // Per-camera options
+          ...slots.map((slot) {
+            final label = slot.deviceName ?? slot.label;
+            return _AudioSourceTile(
+              icon: Icons.mic,
+              label: label,
+              subtitle: 'Records audio for the merged output',
+              isSelected: selectedId == slot.peerId,
+              isLocked: isLocked,
+              onTap: () => controller.masterAudioCameraId.value = slot.peerId,
+            );
+          }),
+        ],
+      );
+    });
+  }
+}
+
+class _AudioSourceTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String subtitle;
+  final bool isSelected;
+  final bool isLocked;
+  final VoidCallback onTap;
+
+  const _AudioSourceTile({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.isSelected,
+    required this.isLocked,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveColor = isLocked ? Colors.white24 : Colors.white;
+    final accentColor = isLocked ? Colors.white24 : Colors.greenAccent;
+    return GestureDetector(
+      onTap: isLocked ? null : onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.green.withValues(alpha: 0.12)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? accentColor : Colors.white12,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon,
+                color: isSelected ? accentColor : Colors.white38, size: 20),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          color: effectiveColor,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500)),
+                  Text(subtitle,
+                      style:
+                          const TextStyle(color: Colors.white38, fontSize: 11)),
+                ],
+              ),
+            ),
+            if (isSelected)
+              Icon(Icons.check_circle, color: accentColor, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _QualityPickerSheet extends StatelessWidget {
   final AdminController controller;
   const _QualityPickerSheet({required this.controller});
@@ -970,6 +1127,13 @@ class _QualityPickerSheet extends StatelessWidget {
                   onTap: () => controller.selectedProfile.value = profile,
                 );
               }),
+
+            const SizedBox(height: 20),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 12),
+
+            // Audio source selector
+            _AudioSourceSection(controller: controller),
 
             const SizedBox(height: 20),
             const Divider(color: Colors.white12),

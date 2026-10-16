@@ -21,6 +21,7 @@ import org.webrtc.VideoFrameDrawer
 import org.webrtc.VideoSink
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -97,6 +98,11 @@ class SurfaceVideoRecorder(
     // Surface mode failure flag — set when swapBuffers() consistently returns false.
     @Volatile private var surfaceFailed = false
     private var swapFailCount = 0
+    // Encoder failure flag — set when dequeueOutputBuffer() throws IllegalStateException,
+    // which happens when the hardware encoder enters an error state (e.g. OMX error on
+    // MediaTek after an unsupported resolution slips through capability filtering).
+    // Once set, no further frames are submitted to the encoder and stop() skips EOS.
+    @Volatile private var encoderFailed = false
 
     // ── video ─────────────────────────────────────────────────────────────────
     private var videoEncoder: MediaCodec? = null
@@ -137,7 +143,16 @@ class SurfaceVideoRecorder(
         muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         isRunning.set(true)
 
-        initVideoEncoder()
+        try {
+            initVideoEncoder()
+        } catch (e: Exception) {
+            // Clean up muxer before rethrowing so the caller doesn't inherit a
+            // half-initialised muxer when it catches the exception and falls back.
+            try { muxer?.release() } catch (_: Exception) {}
+            muxer = null
+            isRunning.set(false)
+            throw e
+        }
 
         if (recordAudio) startAudioCapture()
 
@@ -162,6 +177,22 @@ class SurfaceVideoRecorder(
         }
 
         val enc = MediaCodec.createEncoderByType(VIDEO_MIME)
+
+        // Some hardware encoders fail in Surface input mode due to dataspace/EGL
+        // incompatibilities that are not detectable until encode time:
+        //   • OMX.MTK.* / c2.mtk.* (MediaTek): fails at configure() with ERROR(0x8000100b) or encode time.
+        //   • c2.qti.*  (Qualcomm):  fails at encode time with UNKNOWN_ERROR(0xffffffff)
+        //     after a GraphicBufferSource dataspace change on the first real frame.
+        // Both failures leave the encoder in an unrecoverable state. Bail immediately so
+        // MainActivity's existing catch(Exception) routes to I420VideoRecorder, which uses
+        // the same hardware encoder via CPU input (COLOR_FormatYUV420SemiPlanar) — no EGL,
+        // no dataspace issues.
+        if (enc.name.contains("mtk", ignoreCase = true) ||
+            enc.name.startsWith("c2.qti.", ignoreCase = true)) {
+            enc.release()
+            throw IOException("${enc.name} does not support Surface input mode — falling back to I420")
+        }
+
         enc.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
 
         // createInputSurface() must be called AFTER configure() and BEFORE start().
@@ -201,7 +232,11 @@ class SurfaceVideoRecorder(
             }
         }
 
-        latch.await()
+        val eglInitDone = latch.await(8L, TimeUnit.SECONDS)
+        if (!eglInitDone && initError == null) {
+            initError = IOException("EGL context init timed out after 8 s on ${Build.MODEL}")
+            Log.e(TAG, "EGL init timed out — falling back to I420")
+        }
 
         if (initError != null) {
             // Clean up encoder before propagating — caller will fall back to I420.
@@ -225,7 +260,10 @@ class SurfaceVideoRecorder(
     // ── VideoSink ─────────────────────────────────────────────────────────────
 
     override fun onFrame(frame: VideoFrame) {
-        if (!isRunning.get() || surfaceFailed) { frame.release(); return }
+        // VideoSink.onFrame() receives a borrowed frame reference owned by the delivery chain
+        // (VideoProcessor). Do NOT call frame.release() here — that over-releases the refcount
+        // and crashes EglRenderer's EglThread when it tries to release its own retained copy.
+        if (!isRunning.get() || surfaceFailed || encoderFailed) { return }
 
         val fc = frameCount.incrementAndGet()
         if (fc <= 3L) {
@@ -233,6 +271,37 @@ class SurfaceVideoRecorder(
                     "rot=${frame.rotation}° rotW=${frame.rotatedWidth} rotH=${frame.rotatedHeight} " +
                     "thread=${Thread.currentThread().name}")
         }
+
+        // OES textures are bound to the WebRTC camera thread's EGL context. Drawing them
+        // from SurfVid's separate EGL context triggers OMX.MTK error 0x8000100b and
+        // corrupts WebRTC's TextureBuffer refcount → SIGABRT on EncoderQueue.
+        // Convert to I420 here on the delivery thread (which owns the OES context) so
+        // VideoFrameDrawer receives a plain CPU buffer with no EGL dependency.
+        //
+        // We retain the buffer explicitly before calling toI420(). toI420() posts its
+        // conversion lambda to the camera EGL handler via invokeAtFrontUninterruptibly(),
+        // blocking this thread. Between the post and the lambda executing, WebRTC's
+        // EncoderQueue can concurrently release the same TextureBufferImpl, dropping
+        // refcount to 0. toI420()'s internal retain() would then fail with
+        // "retain() called on an object with refcount < 1" → SIGABRT on EncoderQueue.
+        // Our explicit retain() here prevents refcount from reaching 0 during that window.
+        if (frame.buffer is VideoFrame.TextureBuffer) {
+            frame.buffer.retain()           // hold the buffer through toI420()'s async post
+            val i420 = frame.buffer.toI420()
+            frame.buffer.release()          // balance explicit retain
+            // Do NOT call frame.release() here. VideoSink.onFrame() is called with a
+            // borrowed frame reference — the delivery chain (VideoProcessor) releases it
+            // after all sinks return. Releasing it here under-counts the refcount and
+            // causes VideoProcessor.onFrameCaptured:51 to throw "release() < 1".
+            if (i420 == null) {
+                Log.w(TAG, "TextureBuffer.toI420() null — frame #$fc dropped")
+                return
+            }
+            val i420Frame = VideoFrame(i420, frame.rotation, frame.timestampNs)
+            videoHandler.post { processVideoFrame(i420Frame) }
+            return
+        }
+
         frame.retain()
         videoHandler.post { processVideoFrame(frame) }
     }
@@ -241,7 +310,7 @@ class SurfaceVideoRecorder(
 
     private fun processVideoFrame(frame: VideoFrame) {
         try {
-            if (surfaceFailed) return
+            if (surfaceFailed || encoderFailed) return
 
             val egl  = eglBase    ?: return
             val fd   = frameDrawer ?: return
@@ -320,13 +389,24 @@ class SurfaceVideoRecorder(
     }
 
     private fun drainVideoEncoder(endOfStream: Boolean) {
+        if (encoderFailed) return
         val enc = videoEncoder ?: return
         val mux = muxer ?: return
         var eosRetries = 0
 
         while (true) {
-            val status = enc.dequeueOutputBuffer(
-                videoBufInfo, if (endOfStream) 50_000L else 5_000L)
+            val status: Int
+            try {
+                status = enc.dequeueOutputBuffer(videoBufInfo, if (endOfStream) 50_000L else 5_000L)
+            } catch (e: IllegalStateException) {
+                // MediaCodec entered an error state (e.g. OMX.MTK.VIDEO.ENCODER.AVC
+                // ERROR(0x8000100b) for an unsupported resolution). Mark the encoder
+                // as failed so no further frames or stop() EOS signal attempt it.
+                Log.e(TAG, "drainVideoEncoder: codec in error state — aborting: ${e.message}")
+                encoderFailed = true
+                isRunning.set(false)
+                return
+            }
 
             when (status) {
                 MediaCodec.INFO_TRY_AGAIN_LATER ->
@@ -492,15 +572,21 @@ class SurfaceVideoRecorder(
             // Signal EOS to the surface encoder.  In surface input mode the
             // correct EOS mechanism is signalEndOfInputStream(), NOT queueing
             // an empty input buffer with BUFFER_FLAG_END_OF_STREAM.
+            // If the encoder entered an error state (encoderFailed), skip EOS/drain
+            // and go straight to stop()/release() to avoid another IllegalStateException.
             try {
                 val enc = videoEncoder
+                videoEncoder = null  // null early to prevent double-release on any path
                 if (enc != null) {
-                    eglBase?.makeCurrent()
-                    enc.signalEndOfInputStream()
-                    drainVideoEncoder(true)
-                    enc.stop()
+                    if (!encoderFailed) {
+                        eglBase?.makeCurrent()
+                        try { enc.signalEndOfInputStream() } catch (e: Exception) {
+                            Log.w(TAG, "signalEndOfInputStream: ${e.message}")
+                        }
+                        drainVideoEncoder(true)
+                    }
+                    try { enc.stop() } catch (_: Exception) {}
                     enc.release()
-                    videoEncoder = null
                 }
             } catch (e: Exception) { Log.e(TAG, "video stop error: ${e.message}", e) }
 
