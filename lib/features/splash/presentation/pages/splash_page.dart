@@ -44,10 +44,10 @@ class _SplashPageState extends State<SplashPage> {
                 // Navigate to mode select on button press
                 Get.offAllNamed('/');
               },
-              child: const Text('Start'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(220, 52),
               ),
+              child: const Text('Start'),
             ),
           ],
         ),
