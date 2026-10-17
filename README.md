@@ -116,14 +116,15 @@ Every device signs in with **Firebase Anonymous Auth** at startup. Nothing is as
 
 The API key in `firebase_options.dart` is public, so on its own it lets any script use the project. **Firebase App Check** makes Firestore and Auth accept only requests from this app.
 
-- **Release builds from Google Play** use **Play Integrity**. Register the app's SHA-256 fingerprint in Firebase Project settings, then in Firebase Console → App Check → Apps register the Android app with Play Integrity.
-- **Debug builds** and **release builds installed directly (shared APK)** use the **debug provider**. Play Integrity rejects apps that weren't installed from Play. Build releases for direct install with:
+The app is distributed as a **directly installed APK**, so every build uses the App Check **debug provider** by default. Play Integrity only works for apps installed from Google Play. Each device gets its own random debug token, and only devices whose token you allow can reach Firebase once enforcement is on.
 
-  ```bash
-  flutter build apk --dart-define=APP_CHECK_DEBUG=true
-  ```
+1. Install the APK and open the app once.
+2. Read the device's token. With the phone on USB: `adb logcat | grep DebugAppCheckProvider`. The line says *"Enter this debug secret into the allow list…"*.
+3. Add it under Firebase Console → App Check → Apps → your Android app → **Manage debug tokens**.
 
-  On first launch each device logs a debug token (`adb logcat | grep DebugAppCheckProvider`). Add it under App Check → Apps → Manage debug tokens.
+Uninstalling the app or clearing its data creates a new token, which has to be added again.
+
+If the app is ever published on Google Play, build it with `--dart-define=APP_CHECK_PLAY_INTEGRITY=true`, register the app's SHA-256 in Project settings, and register Play Integrity under App Check → Apps.
 
 **Rollout:** ship the build, check App Check → Metrics until the requests show as *verified*, then click **Enforce** for Cloud Firestore and Authentication. Before enforcement nothing is blocked; after it, unverified requests are rejected.
 
