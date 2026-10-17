@@ -1,6 +1,7 @@
 package com.multicamstudio.multicam_studio
 
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
@@ -99,6 +100,9 @@ class MainActivity : FlutterActivity() {
                     "cancelRender" -> {
                         VideoRenderService.requestCancel()
                         result.success(null)
+                    }
+                    "getAppCheckDebugToken" -> {
+                        result.success(readAppCheckDebugToken())
                     }
                     "getRecordingCapabilities" -> {
                         try {
@@ -419,6 +423,32 @@ class MainActivity : FlutterActivity() {
      * continue serving it.
      */
     @Suppress("DEPRECATION")
+    /**
+     * Returns this install's App Check debug token, or null if the debug
+     * provider hasn't generated one yet.
+     *
+     * firebase-appcheck-debug keeps it in SharedPreferences named
+     * "com.google.firebase.appcheck.debug.store.<persistenceKey>" under
+     * "com.google.firebase.appcheck.debug.DEBUG_SECRET" (its StorageHelper).
+     * The files are matched by prefix so no Firebase classes are needed. If a
+     * future SDK moves the token, this returns null and the app falls back to
+     * pointing at logcat.
+     */
+    private fun readAppCheckDebugToken(): String? {
+        val prefix = "com.google.firebase.appcheck.debug.store."
+        val prefsDir = File(applicationInfo.dataDir, "shared_prefs")
+        val names = prefsDir.listFiles()
+            ?.map { it.name }
+            ?.filter { it.startsWith(prefix) && it.endsWith(".xml") }
+            ?: return null
+        for (name in names) {
+            val prefs = getSharedPreferences(name.removeSuffix(".xml"), Context.MODE_PRIVATE)
+            prefs.getString("com.google.firebase.appcheck.debug.DEBUG_SECRET", null)
+                ?.let { return it }
+        }
+        return null
+    }
+
     private fun saveToPublicStorage(sourcePath: String, filename: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {

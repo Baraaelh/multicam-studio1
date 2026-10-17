@@ -5,6 +5,7 @@ import 'features/admin/presentation/bindings/admin_binding.dart';
 import 'features/admin/presentation/pages/admin_live_page.dart';
 import 'features/admin/presentation/pages/admin_setup_page.dart';
 import 'features/admin/presentation/pages/render_page.dart';
+import 'features/app_check/presentation/pages/device_token_page.dart';
 import 'features/border/presentation/pages/border_page.dart';
 import 'features/camera/presentation/bindings/camera_binding.dart';
 import 'features/camera/presentation/pages/camera_page.dart';
@@ -51,6 +52,7 @@ class App extends StatelessWidget {
         ),
         GetPage(name: '/border', page: () => const BorderPage()),
         GetPage(name: '/policy', page: () => const PolicyPage()),
+        GetPage(name: '/device-token', page: () => DeviceTokenPage()),
       ],
     );
   }
@@ -110,6 +112,12 @@ class ModeSelectPage extends StatelessWidget {
                     child: const Text('Privacy'),
                   ),
                 ],
+              ),
+              TextButton.icon(
+                onPressed: () => Get.toNamed<void>('/device-token'),
+                icon: const Icon(Icons.key, size: 16),
+                label: const Text('Device token'),
+                style: TextButton.styleFrom(foregroundColor: Colors.white54),
               ),
             ],
           ),
