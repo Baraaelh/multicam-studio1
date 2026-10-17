@@ -28,6 +28,35 @@ class RecordingService {
   bool get isRecording => _isRecording;
   String? get lastFilePath => _currentFilePath;
 
+  /// Why the last startRecording failed, or null if it started.
+  String? lastStartError;
+
+  /// What the native recorder reported when the last take stopped
+  /// (see RecorderDiagnostics.kt), or null if it reported nothing.
+  Map<String, dynamic>? lastDiagnostics;
+
+  /// Plain-language reason why a take produced no video, from [diagnostics].
+  static String explainEmptyRecording(Map<String, dynamic>? diagnostics) {
+    final d = diagnostics;
+    if (d == null) return 'the recorder reported nothing';
+    final recorder = d['recorder'] ?? 'recorder';
+    String why;
+    if ((d['framesReceived'] as num? ?? 0) == 0) {
+      why = 'no camera frames reached the recorder';
+    } else if (d['encoderFailed'] == true) {
+      why = 'the video encoder failed on this device';
+    } else if (d['surfaceFailed'] == true) {
+      why = 'GPU (surface) recording failed on this device';
+    } else if (d['videoFormatReady'] != true) {
+      why = 'the video encoder produced no output';
+    } else if (d['muxerStarted'] != true) {
+      why = 'the file was never started (audio: ${d['audioIssue'] ?? 'not ready'})';
+    } else {
+      why = 'no video was written';
+    }
+    return '$why [$recorder]';
+  }
+
   /// Resolves and caches the documents directory. Call once at session start
   /// so the path is ready when the timed recording command fires.
   Future<void> warmUp() async {
@@ -41,6 +70,8 @@ class RecordingService {
     RecordingProfile? profile,
   }) async {
     if (_isRecording) return;
+    lastStartError = null;
+    lastDiagnostics = null;
 
     final videoTracks = stream.getVideoTracks();
     final videoTrack = videoTracks.firstOrNull;
@@ -54,6 +85,7 @@ class RecordingService {
 
     if (videoTrack == null) {
       dev.log('startRecording ABORTED — no video track in stream', name: _tag);
+      lastStartError = 'no video track';
       return;
     }
 
@@ -83,6 +115,7 @@ class RecordingService {
       dev.log('startRecording — started → $filePath', name: _tag);
     } catch (e) {
       dev.log('startRecording FAILED: $e', name: _tag);
+      lastStartError = e is PlatformException ? (e.message ?? e.code) : '$e';
     }
   }
 
@@ -112,7 +145,9 @@ class RecordingService {
     _currentFilePath = null;
 
     try {
-      await _channel.invokeMethod<void>('stopRecording');
+      lastDiagnostics =
+          await _channel.invokeMapMethod<String, dynamic>('stopRecording');
+      dev.log('stopRecording diagnostics: $lastDiagnostics', name: _tag);
     } catch (e) {
       dev.log('stopRecording error: $e', name: _tag);
     }

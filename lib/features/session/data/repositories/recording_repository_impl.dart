@@ -19,6 +19,7 @@ class RecordingRepositoryImpl implements RecordingRepository {
         FirestoreConstants.recordingPort: info.port,
         FirestoreConstants.sizeBytes: info.sizeBytes,
         FirestoreConstants.recordedAt: FieldValue.serverTimestamp(),
+        FirestoreConstants.recordingFailure: ?info.failure,
       });
 
   @override
@@ -36,6 +37,7 @@ class RecordingRepositoryImpl implements RecordingRepository {
                         ? (data[FirestoreConstants.recordedAt] as Timestamp)
                             .toDate()
                         : DateTime.now(),
+                    failure: data[FirestoreConstants.recordingFailure] as String?,
                   ),
                 )
                 .toList(),

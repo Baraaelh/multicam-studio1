@@ -243,7 +243,11 @@ class MainActivity : FlutterActivity() {
                             // saveToPublicStorage copies the file to the device gallery;
                             // it runs after result.success so it never delays the Dart
                             // caller (which is the primary source of perceived stop latency).
-                            runOnUiThread { result.success(null) }
+                            // The result carries the recorder's diagnostics so Dart can
+                            // explain an empty file instead of publishing it silently.
+                            val diagnostics = (sink as? RecorderDiagnostics)?.diagnostics
+                            Log.d(tag, "stopRecording diagnostics: $diagnostics")
+                            runOnUiThread { result.success(diagnostics) }
                             if (savedPath != null) {
                                 try {
                                     saveToPublicStorage(savedPath, File(savedPath).name)

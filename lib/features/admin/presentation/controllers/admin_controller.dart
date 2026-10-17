@@ -87,6 +87,9 @@ class AdminController extends GetxController {
   final downloadProgress = <String, double>{}.obs;
   final downloadedPaths = <String, String>{}.obs;
   final downloadFailed = <String, RecordingInfo>{}.obs;
+  // Cameras whose take produced no usable file (peerId → info). They are
+  // skipped so the other cameras still render.
+  final emptyRecordings = <String, RecordingInfo>{}.obs;
   final autoDownloading = false.obs;
 
   // Per-camera controls (peerId → state)
@@ -462,6 +465,7 @@ class AdminController extends GetxController {
     autoDownloading.value = true;
     downloadFailed.clear();
     downloadedPaths.clear();
+    emptyRecordings.clear();
   }
 
   Future<void> downloadRecording(RecordingInfo info) async {
@@ -508,10 +512,15 @@ class AdminController extends GetxController {
       dev.log('downloadRecording: saved $received bytes → $savePath', name: 'AdminController');
       final savedSize = await File(savePath).length();
       if (savedSize == 0) {
-        dev.log('downloadRecording: WARNING — file is 0 bytes: $savePath', name: 'AdminController');
-      } else {
-        dev.log('downloadRecording: file OK — sizeBytes=$savedSize path=$savePath', name: 'AdminController');
+        // An empty file would make the whole render fail; leave it out.
+        dev.log('downloadRecording: file is 0 bytes — skipping: $savePath', name: 'AdminController');
+        downloadProgress.remove(info.filename);
+        await File(savePath).delete().catchError((_) => File(savePath));
+        emptyRecordings[info.peerId] = info;
+        _maybeFinishAutoDownload();
+        return;
       }
+      dev.log('downloadRecording: file OK — sizeBytes=$savedSize path=$savePath', name: 'AdminController');
       downloadedPaths[info.filename] = savePath;
       downloadProgress.remove(info.filename);
       _saveToPublicStorage(savePath, info.filename);
@@ -690,6 +699,11 @@ class AdminController extends GetxController {
 
   void _checkAutoDownload(List<RecordingInfo> list) {
     for (final info in list) {
+      // The camera reported a failed take: nothing to download.
+      if (info.isEmpty) {
+        emptyRecordings[info.peerId] = info;
+        continue;
+      }
       if (!downloadedPaths.containsKey(info.filename) &&
           !downloadProgress.containsKey(info.filename) &&
           !downloadFailed.containsKey(info.filename)) {
@@ -703,11 +717,15 @@ class AdminController extends GetxController {
     if (!_autoDownloadEnabled) return;
     if (recordings.isEmpty) return;
     final allSettled = recordings.every(
-      (r) => downloadedPaths.containsKey(r.filename) || downloadFailed.containsKey(r.filename),
+      (r) =>
+          downloadedPaths.containsKey(r.filename) ||
+          downloadFailed.containsKey(r.filename) ||
+          emptyRecordings.containsKey(r.peerId),
     );
     if (allSettled) {
       _autoDownloadEnabled = false;
       autoDownloading.value = false;
+      _reportEmptyRecordings();
       // Only auto-merge if ALL downloads succeeded — if any failed, the user
       // must retry them manually before merging.
       final hasFailures = downloadFailed.isNotEmpty;
@@ -723,6 +741,27 @@ class AdminController extends GetxController {
         );
       }
     }
+  }
+
+  /// Tells the admin which cameras produced nothing, and why, before the
+  /// render goes ahead with the others.
+  void _reportEmptyRecordings() {
+    if (emptyRecordings.isEmpty) return;
+    String nameOf(String peerId) {
+      final slot = slots.firstWhereOrNull((s) => s.peerId == peerId);
+      return slot?.deviceName ?? slot?.label ?? peerId.substring(0, min(8, peerId.length));
+    }
+
+    final lines = emptyRecordings.entries
+        .map((e) => '• ${nameOf(e.key)}: ${e.value.failure ?? 'empty file (0 bytes)'}')
+        .join('\n');
+    final nothingLeft = downloadedPaths.isEmpty;
+    Get.snackbar(
+      nothingLeft ? 'No camera recorded video' : 'Some cameras recorded nothing',
+      nothingLeft ? lines : '$lines\nRendering the other cameras.',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 10),
+    );
   }
 
   /// Auto-merges downloaded recordings into a single video based on switch timeline.
@@ -810,6 +849,7 @@ class AdminController extends GetxController {
     downloadProgress.clear();
     downloadedPaths.clear();
     downloadFailed.clear();
+    emptyRecordings.clear();
     autoDownloading.value = false;
     _autoDownloadEnabled = false;
     _autoMergeStarted = false;
