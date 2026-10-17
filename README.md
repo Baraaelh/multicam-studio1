@@ -119,7 +119,7 @@ The API key in `firebase_options.dart` is public, so on its own it lets any scri
 The app is distributed as a **directly installed APK**, so every build uses the App Check **debug provider** by default. Play Integrity only works for apps installed from Google Play. Each device gets its own random debug token, and only devices whose token you allow can reach Firebase once enforcement is on.
 
 1. Install the APK and open the app once.
-2. Read the device's token. With the phone on USB: `adb logcat | grep DebugAppCheckProvider`. The line says *"Enter this debug secret into the allow list…"*.
+2. On the home screen tap **Device token**, then **Copy** or **Share**. If the screen can't find it, read it over USB instead: `adb logcat | grep DebugAppCheckProvider` (the line says *"Enter this debug secret into the allow list…"*).
 3. Add it under Firebase Console → App Check → Apps → your Android app → **Manage debug tokens**.
 
 Uninstalling the app or clearing its data creates a new token, which has to be added again.
