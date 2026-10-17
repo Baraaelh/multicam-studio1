@@ -32,7 +32,7 @@ class I420VideoRecorder(
     private val targetHeight: Int = 720,
     private val targetFps: Int = 30,
     private val targetBitRate: Int = 3_000_000,
-) : VideoSink {
+) : VideoSink, RecorderDiagnostics {
 
     private val videoMime = "video/avc"
     private val expectedFrameGapMs = 1_000.0 / targetFps
@@ -66,6 +66,10 @@ class I420VideoRecorder(
     @Volatile private var videoFormatReady = false
     @Volatile private var audioFormatReady = false
     @Volatile private var audioAvailable = false
+    // Diagnostics (see RecorderDiagnostics).
+    @Volatile private var muxerEverStarted = false
+    @Volatile private var videoSamplesWritten = 0L
+    @Volatile private var audioIssue: String? = null
     @Volatile private var rotationSet = false
     // Set when dequeueOutputBuffer() throws IllegalStateException (codec error state).
     // Prevents FATAL EXCEPTION on the I420Vid HandlerThread.
@@ -541,6 +545,7 @@ class I420VideoRecorder(
                             // ── [7] Muxer write ───────────────────────────────
                             val tMux = System.nanoTime()
                             synchronized(muxerLock) { mux.writeSampleData(videoTrackIdx, buf, videoBufInfo) }
+                            videoSamplesWritten++
                             localMuxWriteNs += System.nanoTime() - tMux
                             localEncoded++
                         }
@@ -728,13 +733,15 @@ class I420VideoRecorder(
         val bufSize = maxOf(minBuf, AUDIO_SAMPLE_RATE / 10 * 2) // ≥ 100 ms
 
         if (minBuf == AudioRecord.ERROR_BAD_VALUE) {
-            Log.e(TAG, "AudioRecord params unsupported — recording video-only"); return
+            Log.e(TAG, "AudioRecord params unsupported — recording video-only")
+            audioIssue = "mic params unsupported"; return
         }
 
         val ar = AudioRecord(MediaRecorder.AudioSource.MIC,
             AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_CONFIG, AUDIO_FORMAT, bufSize)
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioRecord init failed — recording video-only"); ar.release(); return
+            Log.e(TAG, "AudioRecord init failed — recording video-only"); ar.release()
+            audioIssue = "mic init failed"; return
         }
         Log.i(TAG, "DIAG AudioRecord created: ${(System.nanoTime() - tAud0) / 1_000_000L}ms")
 
@@ -758,13 +765,27 @@ class I420VideoRecorder(
         } catch (e: Exception) {
             Log.e(TAG, "Audio encoder init failed — recording video-only: ${e.message}")
             ar.release()
+            audioIssue = "audio encoder init failed: ${e.message}"
             return
         }
 
+        // The camera's live WebRTC stream already holds the microphone. On some
+        // devices (notably Android 9 and older) a second capture can't start:
+        // startRecording() returns without recording and read() fails at once.
+        // Waiting for an audio format that never comes would keep the muxer
+        // from ever starting and leave a 0-byte file, so record video-only.
+        ar.startRecording()
+        if (ar.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            Log.e(TAG, "AudioRecord.startRecording() did not start (mic in use?) — recording video-only")
+            audioIssue = "mic busy (could not start)"
+            ar.release()
+            try { aenc.stop() } catch (_: Exception) {}
+            aenc.release()
+            return
+        }
         audioAvailable = true
         audioEncoder = aenc
         audioRecord = ar
-        ar.startRecording()
         Log.i(TAG, "DIAG AudioRecord started, bufSize=$bufSize total=${(System.nanoTime() - tAud0) / 1_000_000L}ms")
 
         // Run the capture loop on the dedicated audio handler thread.
@@ -793,6 +814,23 @@ class I420VideoRecorder(
             drainAudioEncoder(false)
         }
 
+        // Capture ended while still recording, before any audio was encoded:
+        // stop waiting for an audio track so the video still gets written.
+        if (isRunning.get() && !audioFormatReady) {
+            Log.e(TAG, "mic stopped delivering before any audio was encoded — continuing video-only")
+            audioIssue = "mic stopped delivering audio"
+            synchronized(muxerLock) {
+                audioAvailable = false
+                muxer?.let { maybeStartMuxer(it) }
+            }
+            // Drop the audio encoder: if it emitted its format now, adding the
+            // track to the already started muxer would throw.
+            audioEncoder = null
+            try { aenc.stop() } catch (_: Exception) {}
+            aenc.release()
+            return
+        }
+
         // Signal EOS to the audio encoder.
         val eosIdx = aenc.dequeueInputBuffer(50_000L)
         if (eosIdx >= 0) aenc.queueInputBuffer(eosIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -809,6 +847,11 @@ class I420VideoRecorder(
                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     synchronized(muxerLock) {
+                        if (muxerStarted) {
+                            // Muxer already running video-only; tracks can't be added now.
+                            Log.w(TAG, "audio format arrived after muxer start — audio dropped")
+                            return@synchronized
+                        }
                         audioTrackIdx = mux.addTrack(aenc.outputFormat)
                         audioFormatReady = true
                         Log.d(TAG, "audio format ready, track=$audioTrackIdx")
@@ -817,7 +860,7 @@ class I420VideoRecorder(
                 }
                 else -> if (status >= 0) {
                     val isConfig = audioBufInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                    if (muxerStarted && audioBufInfo.size > 0 && !isConfig) {
+                    if (muxerStarted && audioTrackIdx >= 0 && audioBufInfo.size > 0 && !isConfig) {
                         aenc.getOutputBuffer(status)?.let { buf ->
                             buf.position(audioBufInfo.offset); buf.limit(audioBufInfo.offset + audioBufInfo.size)
                             if (firstAudioPtsUs == Long.MIN_VALUE) {
@@ -842,11 +885,26 @@ class I420VideoRecorder(
         if (!muxerStarted && ready) {
             mux.start()
             muxerStarted = true
+            muxerEverStarted = true
             Log.d(TAG, "muxer started (video=$videoTrackIdx, audio=$audioTrackIdx)")
         }
     }
 
     // ── stop ──────────────────────────────────────────────────────────────────
+
+    override val diagnostics: Map<String, Any?>
+        get() = mapOf(
+            "recorder" to "I420VideoRecorder",
+            "framesReceived" to frameCount.get(),
+            "videoSamplesWritten" to videoSamplesWritten,
+            "videoFormatReady" to videoFormatReady,
+            "encoderFailed" to encoderFailed,
+            "audioAvailable" to audioAvailable,
+            "audioFormatReady" to audioFormatReady,
+            "audioIssue" to audioIssue,
+            "muxerStarted" to muxerEverStarted,
+            "sizeBytes" to java.io.File(outputPath).length(),
+        )
 
     /**
      * Stops recording, drains both encoders, finalises the muxer, then calls [onDone].

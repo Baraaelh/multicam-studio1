@@ -8,6 +8,10 @@ class RecordingInfo extends Equatable {
   final int sizeBytes;
   final DateTime recordedAt;
 
+  /// Why this camera's recording failed, or null if it recorded normally.
+  /// A failed recording has no file (sizeBytes 0) and is never downloaded.
+  final String? failure;
+
   const RecordingInfo({
     required this.peerId,
     required this.filename,
@@ -15,7 +19,11 @@ class RecordingInfo extends Equatable {
     required this.port,
     required this.sizeBytes,
     required this.recordedAt,
+    this.failure,
   });
+
+  /// No usable file: it failed, or came out empty.
+  bool get isEmpty => failure != null || sizeBytes <= 0;
 
   String get downloadUrl => 'http://$localIp:$port/$filename';
 
@@ -27,5 +35,6 @@ class RecordingInfo extends Equatable {
   }
 
   @override
-  List<Object?> get props => [peerId, filename, localIp, port, sizeBytes, recordedAt];
+  List<Object?> get props =>
+      [peerId, filename, localIp, port, sizeBytes, recordedAt, failure];
 }

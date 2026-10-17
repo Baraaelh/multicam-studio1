@@ -374,12 +374,58 @@ class CameraController extends GetxController {
   Future<void> _stopAndPublish() async {
     final file = await _recordingService.stopRecording();
     final payload = _payload;
-    if (file == null || payload == null) {
-      dev.log('_stopAndPublish: aborted — file=$file payload=$payload', name: 'CameraController');
+    if (payload == null) {
+      dev.log('_stopAndPublish: aborted — no session', name: 'CameraController');
       return;
     }
 
-    dev.log('_stopAndPublish: file=${file.path} size=${await file.length()}', name: 'CameraController');
+    // A take that produced nothing is reported instead of silently skipped
+    // or published as a 0-byte file (which used to fail the whole render).
+    final startError = _recordingService.lastStartError;
+    final fileSize = file != null ? await file.length() : 0;
+    if (file == null || fileSize == 0) {
+      if (file == null && startError == null) {
+        dev.log('_stopAndPublish: nothing was recording', name: 'CameraController');
+        return;
+      }
+      final reason = startError != null
+          ? 'recording could not start: $startError'
+          : RecordingService.explainEmptyRecording(_recordingService.lastDiagnostics);
+      dev.log('_stopAndPublish: no usable recording — $reason', name: 'CameraController');
+      Get.snackbar(
+        'Recording failed on this camera',
+        reason,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 8),
+      );
+      await _publishRecordingInfo(
+        PublishRecordingInfoParams(
+          sessionId: payload.sessionId,
+          info: RecordingInfo(
+            peerId: payload.peerId,
+            filename: file?.uri.pathSegments.last ?? '',
+            localIp: '',
+            port: 0,
+            sizeBytes: 0,
+            recordedAt: DateTime.now(),
+            failure: reason,
+          ),
+        ),
+      );
+      return;
+    }
+
+    final audioIssue = _recordingService.lastDiagnostics?['audioIssue'] as String?;
+    if (audioIssue != null && !isStudioMode.value) {
+      Get.snackbar(
+        'Recorded without audio',
+        'The microphone was unavailable ($audioIssue). The video was saved.',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 5),
+      );
+    }
+
+    dev.log('_stopAndPublish: file=${file.path} size=$fileSize', name: 'CameraController');
 
     final ip = await TransferServer.getLanIp();
     if (ip == null) {
@@ -388,7 +434,7 @@ class CameraController extends GetxController {
     }
 
     final filename = file.uri.pathSegments.last;
-    final sizeBytes = await file.length();
+    final sizeBytes = fileSize;
 
     _transferServer.register(filename, file.path);
 
