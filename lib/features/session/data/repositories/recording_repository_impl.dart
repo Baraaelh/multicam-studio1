@@ -20,6 +20,8 @@ class RecordingRepositoryImpl implements RecordingRepository {
         FirestoreConstants.sizeBytes: info.sizeBytes,
         FirestoreConstants.recordedAt: FieldValue.serverTimestamp(),
         FirestoreConstants.recordingFailure: ?info.failure,
+        if (info.startDelayMs > 0)
+          FirestoreConstants.recordingStartDelayMs: info.startDelayMs,
       });
 
   @override
@@ -38,6 +40,8 @@ class RecordingRepositoryImpl implements RecordingRepository {
                             .toDate()
                         : DateTime.now(),
                     failure: data[FirestoreConstants.recordingFailure] as String?,
+                    startDelayMs:
+                        (data[FirestoreConstants.recordingStartDelayMs] as num?)?.toInt() ?? 0,
                   ),
                 )
                 .toList(),

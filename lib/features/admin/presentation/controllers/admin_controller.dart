@@ -455,7 +455,7 @@ class AdminController extends GetxController {
     }
     return (
       path: path,
-      startedAt: _cameraRecordingStartAt[masterCamId] ?? startedAt,
+      startedAt: _cameraFileStartAt(masterCamId, startedAt),
     );
   }
 
@@ -632,6 +632,18 @@ class AdminController extends GetxController {
   // Timeline builder — called before navigating to render
   // ---------------------------------------------------------------------------
 
+  /// When [peerId]'s file of the current take actually starts: the instant
+  /// it was told to start, plus any delay the camera reported for having to
+  /// switch recorders mid-take.
+  DateTime _cameraFileStartAt(String peerId, DateTime takeStartedAt) {
+    final commanded = _cameraRecordingStartAt[peerId] ?? takeStartedAt;
+    final delayMs = recordings
+            .firstWhereOrNull((r) => r.peerId == peerId && !r.isEmpty)
+            ?.startDelayMs ??
+        0;
+    return commanded.add(Duration(milliseconds: delayMs));
+  }
+
   List<Map<String, dynamic>> buildRenderSegments() {
     final startedAt = _recordingStartedAt;
     final stoppedAt = _recordingStoppedAt;
@@ -672,7 +684,7 @@ class AdminController extends GetxController {
       final path = peerToPath[peerId];
       if (path == null) continue;
 
-      final cameraStartedAt = _cameraRecordingStartAt[peerId] ?? startedAt;
+      final cameraStartedAt = _cameraFileStartAt(peerId, startedAt);
       final joinOffsetMs = cameraStartedAt.difference(startedAt).inMilliseconds.clamp(0, totalMs);
       final effectiveStartMs = segStartMs.clamp(joinOffsetMs, totalMs);
       final effectiveEndMs = segEndMs.clamp(joinOffsetMs, totalMs);

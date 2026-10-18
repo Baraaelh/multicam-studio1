@@ -35,6 +35,14 @@ class MainActivity : FlutterActivity() {
     private var currentRecorderStopFn: (((() -> Unit) -> Unit))? = null
     private var currentRecorderTrack: VideoTrack? = null
     private var currentOutputPath: String? = null
+    // When the current take switched from SurfaceVideoRecorder to
+    // I420VideoRecorder mid-recording: how much later the new file starts (ms).
+    private var currentFallbackDelayMs = 0L
+
+    // Devices whose surface encoder failed once go straight to I420 next time.
+    private val recorderPrefs by lazy {
+        getSharedPreferences("multicam_recorder", Context.MODE_PRIVATE)
+    }
 
     private var adminAudioRecorder: AdminAudioRecorder? = null
 
@@ -156,10 +164,23 @@ class MainActivity : FlutterActivity() {
                                 val stopFn: ((() -> Unit) -> Unit)
 
                                 var surfaceRec: SurfaceVideoRecorder? = null
-                                try {
+                                // Set once the sink is attached; the fallback measures
+                                // its start delay from here.
+                                val sinkAttachedAtMs = java.util.concurrent.atomic.AtomicLong(0)
+                                if (recorderPrefs.getBoolean(PREF_SURFACE_BROKEN, false)) {
+                                    Log.i(tag, "Surface encoder failed on this device before — using I420")
+                                } else try {
                                     val sharedCtx = EglUtils.getRootEglBaseContext()
+                                    var self: SurfaceVideoRecorder? = null
                                     val rec = SurfaceVideoRecorder(
-                                        outputPath, width, height, frameRate, bitRate, sharedCtx)
+                                        outputPath, width, height, frameRate, bitRate, sharedCtx,
+                                    ) {
+                                        self?.let { failed ->
+                                            fallbackToI420(failed, videoTrack, outputPath, width, height,
+                                                frameRate, bitRate, recordAudio, sinkAttachedAtMs.get())
+                                        }
+                                    }
+                                    self = rec
                                     val tSurf = System.nanoTime()
                                     rec.start(recordAudio)
                                     Log.i(tag, "DIAG SurfaceVideoRecorder.start(): ${(System.nanoTime() - tSurf) / 1_000_000L}ms")
@@ -172,7 +193,10 @@ class MainActivity : FlutterActivity() {
                                     sink = surfaceRec
                                     stopFn = surfaceRec::stop
                                 } else {
-                                    val rec = I420VideoRecorder(outputPath, width, height, frameRate, bitRate)
+                                    val rec = I420VideoRecorder(
+                                        outputPath, width, height, frameRate, bitRate,
+                                        forceSoftwareEncoder = recorderPrefs.getBoolean(PREF_SURFACE_BROKEN, false),
+                                    )
                                     val tI420 = System.nanoTime()
                                     rec.start(recordAudio)
                                     Log.i(tag, "DIAG I420VideoRecorder.start(): ${(System.nanoTime() - tI420) / 1_000_000L}ms")
@@ -182,6 +206,7 @@ class MainActivity : FlutterActivity() {
 
                                 val tSink = System.nanoTime()
                                 videoTrack.addSink(sink)
+                                sinkAttachedAtMs.set(System.currentTimeMillis())
                                 Log.i(tag, "DIAG addSink() done: ${(System.nanoTime() - tSink) / 1_000_000L}ms")
                                 // State variables are only written/read on the platform thread.
                                 runOnUiThread {
@@ -189,6 +214,7 @@ class MainActivity : FlutterActivity() {
                                     currentRecorderStopFn = stopFn
                                     currentRecorderTrack = videoTrack
                                     currentOutputPath = outputPath
+                                    currentFallbackDelayMs = 0L
                                     Log.d(tag, "startRecording OK ${width}×${height}@${frameRate}fps ${bitRate}bps recordAudio=$recordAudio → $outputPath")
                                     result.success(null)
                                 }
@@ -227,6 +253,7 @@ class MainActivity : FlutterActivity() {
                         val stopFn = currentRecorderStopFn
                         val track = currentRecorderTrack
                         val savedPath = currentOutputPath
+                        val fallbackDelayMs = currentFallbackDelayMs
                         currentRecorder = null
                         currentRecorderStopFn = null
                         currentRecorderTrack = null
@@ -245,7 +272,11 @@ class MainActivity : FlutterActivity() {
                             // caller (which is the primary source of perceived stop latency).
                             // The result carries the recorder's diagnostics so Dart can
                             // explain an empty file instead of publishing it silently.
-                            val diagnostics = (sink as? RecorderDiagnostics)?.diagnostics
+                            val diagnostics = (sink as? RecorderDiagnostics)?.diagnostics?.let {
+                                if (fallbackDelayMs > 0L) {
+                                    it + mapOf("fallbackFromSurface" to true, "startDelayMs" to fallbackDelayMs)
+                                } else it
+                            }
                             Log.d(tag, "stopRecording diagnostics: $diagnostics")
                             runOnUiThread { result.success(diagnostics) }
                             if (savedPath != null) {
@@ -453,6 +484,68 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    /**
+     * The surface encoder failed after recording started (seen on some Xiaomi /
+     * MediaTek devices: the codec enters an error state on the first frames).
+     * Swap in I420VideoRecorder, which uses the CPU path and a software encoder
+     * on MediaTek, writing to the same file. The new file starts a little later;
+     * that delay is reported with the diagnostics so the render stays in sync.
+     * The device is remembered so later takes start with I420 directly.
+     */
+    private fun fallbackToI420(
+        failed: SurfaceVideoRecorder,
+        track: VideoTrack,
+        outputPath: String,
+        width: Int,
+        height: Int,
+        frameRate: Int,
+        bitRate: Int,
+        recordAudio: Boolean,
+        sinkAttachedAtMs: Long,
+    ) {
+        recorderPrefs.edit().putBoolean(PREF_SURFACE_BROKEN, true).apply()
+        val written = (failed.diagnostics["videoSamplesWritten"] as? Long) ?: 0L
+        if (written > 0L) {
+            // Part of the take is already in the file; keep it rather than overwrite.
+            Log.w(tag, "Surface encoder failed after $written samples — keeping the partial file")
+            return
+        }
+        Log.w(tag, "Surface encoder failed — switching this take to I420VideoRecorder")
+        Thread {
+            try { track.removeSink(failed) } catch (e: Exception) { Log.w(tag, "removeSink: ${e.message}") }
+            // Stop first: it releases the microphone and the muxer on this file.
+            failed.stop {
+                Thread {
+                    try {
+                        File(outputPath).delete()
+                        val rec = I420VideoRecorder(
+                            outputPath, width, height, frameRate, bitRate,
+                            forceSoftwareEncoder = true,
+                        )
+                        rec.start(recordAudio)
+                        val delayMs = if (sinkAttachedAtMs > 0L) {
+                            System.currentTimeMillis() - sinkAttachedAtMs
+                        } else 0L
+                        runOnUiThread {
+                            if (currentRecorder === failed) {
+                                track.addSink(rec)
+                                currentRecorder = rec
+                                currentRecorderStopFn = rec::stop
+                                currentFallbackDelayMs = delayMs
+                                Log.i(tag, "I420 fallback recording, starts ${delayMs}ms late")
+                            } else {
+                                // The take was stopped while switching.
+                                rec.stop {}
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(tag, "I420 fallback failed: ${e.message}", e)
+                    }
+                }.start()
+            }
+        }.start()
+    }
+
     private fun saveToPublicStorage(sourcePath: String, filename: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
@@ -490,5 +583,9 @@ class MainActivity : FlutterActivity() {
             )
             Log.d(tag, "saveToPublicStorage: legacy OK → ${dest.absolutePath}")
         }
+    }
+
+    private companion object {
+        const val PREF_SURFACE_BROKEN = "surface_encoder_broken"
     }
 }

@@ -56,7 +56,20 @@ class SurfaceVideoRecorder(
     private val targetFps: Int = 30,
     private val targetBitRate: Int = 3_000_000,
     private val sharedEglContext: EglBase.Context?,
+    /**
+     * Called once if video can't be recorded after start() succeeded (encoder
+     * error state, or EGL swaps keep failing), so the caller can switch to
+     * I420VideoRecorder. Runs on the recorder's video thread.
+     */
+    private val onVideoFailed: (() -> Unit)? = null,
 ) : VideoSink, RecorderDiagnostics {
+
+    private val videoFailureReported = AtomicBoolean(false)
+    private val stopped = AtomicBoolean(false)
+
+    private fun reportVideoFailure() {
+        if (videoFailureReported.compareAndSet(false, true)) onVideoFailed?.invoke()
+    }
 
     companion object {
         private const val TAG = "SurfaceVideoRecorder"
@@ -376,6 +389,7 @@ class SurfaceVideoRecorder(
                         surfaceFailed = true
                         Log.e(TAG, "Surface mode disabled after $MAX_SWAP_FAILS " +
                                 "consecutive EGL swap errors — remaining frames will be dropped")
+                        reportVideoFailure()
                     }
                     return
                 }
@@ -409,6 +423,7 @@ class SurfaceVideoRecorder(
                 Log.e(TAG, "drainVideoEncoder: codec in error state — aborting: ${e.message}")
                 encoderFailed = true
                 isRunning.set(false)
+                reportVideoFailure()
                 return
             }
 
@@ -624,6 +639,12 @@ class SurfaceVideoRecorder(
      * no further frames arrive while draining.
      */
     fun stop(onDone: () -> Unit) {
+        // Idempotent: the I420 fallback and a user stop can both stop this
+        // recorder; releasing the codec, EGL and muxer twice would throw.
+        if (!stopped.compareAndSet(false, true)) {
+            onDone()
+            return
+        }
         isRunning.set(false)
         audioRecord?.stop()  // unblocks ar.read() in the audio loop
 

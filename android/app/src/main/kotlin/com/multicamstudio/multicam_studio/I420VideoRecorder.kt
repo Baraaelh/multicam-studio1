@@ -32,6 +32,11 @@ class I420VideoRecorder(
     private val targetHeight: Int = 720,
     private val targetFps: Int = 30,
     private val targetBitRate: Int = 3_000_000,
+    /**
+     * Use Android's software H.264 encoder even on non-MediaTek devices. Set
+     * after this device's hardware encoder already failed in surface mode.
+     */
+    private val forceSoftwareEncoder: Boolean = false,
 ) : VideoSink, RecorderDiagnostics {
 
     private val videoMime = "video/avc"
@@ -246,9 +251,9 @@ class I420VideoRecorder(
                     (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && Build.SOC_MANUFACTURER.lowercase().contains("mediatek"))
 
         val tCreate = System.nanoTime()
-        videoEncoder = if (isMtk) {
+        videoEncoder = if (isMtk || forceSoftwareEncoder) {
             try {
-                Log.i(TAG, "DIAG MTK device detected — forcing software encoder to avoid HW overload")
+                Log.i(TAG, "DIAG forcing software encoder (mtk=$isMtk forced=$forceSoftwareEncoder)")
                 try {
                     MediaCodec.createByCodecName("c2.android.avc.encoder")
                 } catch (e: Exception) {
@@ -895,6 +900,7 @@ class I420VideoRecorder(
     override val diagnostics: Map<String, Any?>
         get() = mapOf(
             "recorder" to "I420VideoRecorder",
+            "softwareEncoderForced" to forceSoftwareEncoder,
             "framesReceived" to frameCount.get(),
             "videoSamplesWritten" to videoSamplesWritten,
             "videoFormatReady" to videoFormatReady,

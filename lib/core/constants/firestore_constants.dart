@@ -48,6 +48,7 @@ abstract final class FirestoreConstants {
   static const String sizeBytes = 'sizeBytes';
   static const String recordedAt = 'recordedAt';
   static const String recordingFailure = 'failure';
+  static const String recordingStartDelayMs = 'startDelayMs';
 
   // Recording capabilities field on peer document
   static const String capabilities = 'capabilities';
