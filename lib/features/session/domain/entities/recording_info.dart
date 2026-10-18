@@ -12,6 +12,10 @@ class RecordingInfo extends Equatable {
   /// A failed recording has no file (sizeBytes 0) and is never downloaded.
   final String? failure;
 
+  /// How much later than the take's start instant this file begins, when the
+  /// camera had to switch recorders mid-take (e.g. surface → I420 fallback).
+  final int startDelayMs;
+
   const RecordingInfo({
     required this.peerId,
     required this.filename,
@@ -20,6 +24,7 @@ class RecordingInfo extends Equatable {
     required this.sizeBytes,
     required this.recordedAt,
     this.failure,
+    this.startDelayMs = 0,
   });
 
   /// No usable file: it failed, or came out empty.
@@ -36,5 +41,5 @@ class RecordingInfo extends Equatable {
 
   @override
   List<Object?> get props =>
-      [peerId, filename, localIp, port, sizeBytes, recordedAt, failure];
+      [peerId, filename, localIp, port, sizeBytes, recordedAt, failure, startDelayMs];
 }

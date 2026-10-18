@@ -451,6 +451,10 @@ class CameraController extends GetxController {
           port: TransferServer.port,
           sizeBytes: sizeBytes,
           recordedAt: DateTime.now(),
+          // Set when the recorder had to be swapped mid-take; the admin shifts
+          // this camera on the timeline by it.
+          startDelayMs:
+              (_recordingService.lastDiagnostics?['startDelayMs'] as num?)?.toInt() ?? 0,
         ),
       ),
     );
