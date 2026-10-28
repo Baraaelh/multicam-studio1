@@ -94,8 +94,8 @@ class PolicyPage extends StatelessWidget {
               const SizedBox(height: 32),
               Center(
                 child: FilledButton(
-                  onPressed: () => Get.offNamed('/'),
-                  child: const Text('Back to Start'),
+                  onPressed: () => Get.back<void>(),
+                  child: const Text('Back'),
                 ),
               ),
             ],

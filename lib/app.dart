@@ -10,11 +10,14 @@ import 'features/border/presentation/pages/border_page.dart';
 import 'features/camera/presentation/bindings/camera_binding.dart';
 import 'features/camera/presentation/pages/camera_page.dart';
 import 'features/camera/presentation/pages/qr_scan_page.dart' show CodeJoinPage;
+import 'features/onboarding/data/onboarding_store.dart';
+import 'features/onboarding/presentation/pages/onboarding_page.dart';
 import 'features/policy/presentation/pages/policy_page.dart';
-import 'features/splash/presentation/pages/splash_page.dart';
 
 class App extends StatelessWidget {
-  const App({super.key});
+  const App({super.key, this.onboardingStore = const OnboardingStore()});
+
+  final OnboardingStore onboardingStore;
 
   @override
   Widget build(BuildContext context) {
@@ -22,9 +25,10 @@ class App extends StatelessWidget {
       title: 'Multicam Studio',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true),
-      initialRoute: '/splash',
+      initialRoute: '/welcome',
       getPages: [
-        GetPage(name: '/splash', page: () => const SplashPage()),
+        GetPage(name: '/welcome', page: () => OnboardingPage(store: onboardingStore)),
+        GetPage(name: '/guide', page: () => const OnboardingPage(review: true)),
         GetPage(name: '/', page: () => const ModeSelectPage()),
         GetPage(
           name: '/camera/scan',
@@ -102,6 +106,11 @@ class ModeSelectPage extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  TextButton(
+                    onPressed: () => Get.toNamed<void>('/guide'),
+                    child: const Text('How to use'),
+                  ),
+                  const SizedBox(width: 16),
                   TextButton(
                     onPressed: () => Get.toNamed<void>('/border'),
                     child: const Text('Terms'),
