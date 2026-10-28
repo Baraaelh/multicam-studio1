@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import 'core/services/app_check_service.dart';
 import 'features/admin/presentation/bindings/admin_binding.dart';
 import 'features/admin/presentation/pages/admin_live_page.dart';
 import 'features/admin/presentation/pages/admin_setup_page.dart';
@@ -122,12 +123,14 @@ class ModeSelectPage extends StatelessWidget {
                   ),
                 ],
               ),
-              TextButton.icon(
-                onPressed: () => Get.toNamed<void>('/device-token'),
-                icon: const Icon(Icons.key, size: 16),
-                label: const Text('Device token'),
-                style: TextButton.styleFrom(foregroundColor: Colors.white54),
-              ),
+              // Only debug-provider builds need a token registered in Firebase.
+              if (appCheckUsesDebugProvider)
+                TextButton.icon(
+                  onPressed: () => Get.toNamed<void>('/device-token'),
+                  icon: const Icon(Icons.key, size: 16),
+                  label: const Text('Device token'),
+                  style: TextButton.styleFrom(foregroundColor: Colors.white54),
+                ),
             ],
           ),
         ),
