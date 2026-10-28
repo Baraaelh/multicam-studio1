@@ -4,6 +4,19 @@ import 'package:get/get.dart';
 import 'package:multicam_studio/app.dart';
 import 'package:multicam_studio/core/di/injection.dart';
 import 'package:multicam_studio/features/app_check/presentation/pages/device_token_page.dart';
+import 'package:multicam_studio/features/onboarding/data/onboarding_store.dart';
+
+class _FakeStore extends OnboardingStore {
+  _FakeStore({this.accepted = false});
+
+  bool accepted;
+
+  @override
+  Future<bool> isAccepted() async => accepted;
+
+  @override
+  Future<void> accept() async => accepted = true;
+}
 
 void main() {
   setUpAll(() {
@@ -13,23 +26,72 @@ void main() {
 
   tearDown(Get.reset);
 
-  testWidgets('App opens on the splash screen', (tester) async {
-    await tester.pumpWidget(const App());
+  testWidgets('First launch opens the welcome guide with the developer credit',
+      (tester) async {
+    await tester.pumpWidget(App(onboardingStore: _FakeStore()));
+    await tester.pumpAndSettle();
 
     expect(find.text('Multicam Studio'), findsOneWidget);
-    expect(find.text('Start'), findsOneWidget);
+    expect(find.text('Baraa Alhaddad'), findsOneWidget);
     expect(find.text('Camera Mode'), findsNothing);
   });
 
-  testWidgets('Start leads to the mode select page with both modes',
+  testWidgets('Terms must be accepted before reaching the mode select page',
       (tester) async {
-    await tester.pumpWidget(const App());
+    final store = _FakeStore();
+    await tester.pumpWidget(App(onboardingStore: store));
+    await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Start'));
+    await tester.tap(find.text('Skip'));
+    await tester.pumpAndSettle();
+    expect(find.text('Usage & privacy'), findsOneWidget);
+
+    final start = find.widgetWithText(FilledButton, 'Get started');
+    expect(tester.widget<FilledButton>(start).onPressed, isNull);
+
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    await tester.tap(start);
+    await tester.pumpAndSettle();
+
+    expect(store.accepted, isTrue);
+    expect(find.text('Camera Mode'), findsOneWidget);
+    expect(find.text('Admin Mode'), findsOneWidget);
+  });
+
+  testWidgets('Next walks through the usage steps', (tester) async {
+    await tester.pumpWidget(App(onboardingStore: _FakeStore()));
+    await tester.pumpAndSettle();
+
+    for (final title in ['How it works', 'Director phone', 'Camera phones', 'Usage & privacy']) {
+      await tester.tap(find.text('Next'));
+      await tester.pumpAndSettle();
+      expect(find.text(title), findsOneWidget);
+    }
+  });
+
+  testWidgets('Returning users skip straight to the mode select page',
+      (tester) async {
+    await tester.pumpWidget(App(onboardingStore: _FakeStore(accepted: true)));
     await tester.pumpAndSettle();
 
     expect(find.text('Camera Mode'), findsOneWidget);
-    expect(find.text('Admin Mode'), findsOneWidget);
+  });
+
+  testWidgets('How to use reopens the guide without asking again',
+      (tester) async {
+    await tester.pumpWidget(App(onboardingStore: _FakeStore(accepted: true)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('How to use'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Skip'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Checkbox), findsNothing);
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(find.text('Camera Mode'), findsOneWidget);
   });
 
   group('Device token page', () {
