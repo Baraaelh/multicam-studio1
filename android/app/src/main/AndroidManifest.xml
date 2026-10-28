@@ -19,9 +19,8 @@
     <!-- Wake lock to keep CPU active during live streaming -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Storage for local recording (Step 7+) -->
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Storage for local recording. Recordings are only inserted via MediaStore,
+         never read back from shared storage, so no READ_MEDIA_* permission. -->
     <!-- Write to public Movies directory on Android ≤ 9; API 29+ uses MediaStore without this -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
