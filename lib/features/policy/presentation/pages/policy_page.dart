@@ -89,7 +89,7 @@ class PolicyPage extends StatelessWidget {
                 title: 'Contact',
                 body:
                     'For questions about this policy or your data, please contact us at:\n'
-                    'anasahmes03@icloud.com',
+                    'braalhdad701@gmail.com',
               ),
               const SizedBox(height: 32),
               Center(
