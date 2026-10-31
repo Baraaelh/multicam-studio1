@@ -1,5 +1,5 @@
 import '../entities/ice_candidate_entity.dart';
-import '../entities/recording_profile.dart';
+import '../entities/peer_info.dart';
 import '../entities/sdp_info.dart';
 
 abstract interface class SignalingRepository {
@@ -49,5 +49,5 @@ abstract interface class SignalingRepository {
   Future<String?> lookupSessionCode(String code);
 
   /// Emits the full peer list (with capabilities) whenever it changes.
-  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(String sessionId);
+  Stream<List<PeerInfo>> watchPeers(String sessionId);
 }

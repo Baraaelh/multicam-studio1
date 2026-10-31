@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../controllers/camera_controller.dart';
+import 'join_qr_scanner_page.dart';
 
 class CodeJoinPage extends StatefulWidget {
   const CodeJoinPage({super.key});
@@ -20,6 +21,13 @@ class _CodeJoinPageState extends State<CodeJoinPage> {
   void dispose() {
     _codeController.dispose();
     super.dispose();
+  }
+
+  Future<void> _scanQr() async {
+    final code = await Get.to<String>(() => const JoinQrScannerPage());
+    if (code == null || !mounted) return;
+    _codeController.text = code;
+    await _join();
   }
 
   Future<void> _join() async {
@@ -136,6 +144,17 @@ class _CodeJoinPageState extends State<CodeJoinPage> {
                       'Join Session',
                       style: TextStyle(fontSize: 16),
                     ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _loading ? null : _scanQr,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan QR'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white24),
+              ),
             ),
           ],
         ),

@@ -6,6 +6,7 @@ import 'dart:math';
 
 // ignore_for_file: unawaited_futures
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:get/get.dart';
@@ -18,6 +19,7 @@ import '../../../../core/services/clock_sync_service.dart';
 import '../../../../core/services/webrtc_service.dart';
 import '../services/render_service.dart';
 import '../../../session/domain/entities/peer_connection_state.dart';
+import '../../../session/domain/entities/peer_info.dart';
 import '../../../session/domain/entities/recording_info.dart';
 import '../../../session/domain/entities/recording_profile.dart';
 import '../../../session/domain/entities/switch_event.dart';
@@ -166,9 +168,15 @@ class AdminController extends GetxController {
   // --- Internals ---
   late String _adminId;
   final _deviceNameSubs = <String, StreamSubscription<String?>>{};
+  // Firebase account of the camera in each slot, to recognise a phone that
+  // leaves and joins again.
+  final _slotUids = <String, String>{};
+  // Peers whose slot a rejoining phone took over; their peer documents stay
+  // in the list until the session ends and must not get a slot again.
+  final _retiredPeerIds = <String>{};
   StreamSubscription<RemoteStreamEvent>? _remoteStreamSub;
   StreamSubscription<List<RecordingInfo>>? _recordingSub;
-  StreamSubscription<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>>? _peerListSub;
+  StreamSubscription<List<PeerInfo>>? _peerListSub;
   Worker? _peerStatusWorker;
   Worker? _switchWorker;
   Worker? _renderDoneWorker;
@@ -262,17 +270,6 @@ class AdminController extends GetxController {
 
     session.value = s.copyWith(status: SessionStatus.live);
     isStarting.value = false;
-  }
-
-  Future<void> connectNewSlot() async {
-    final s = session.value;
-    if (s == null || slots.length >= _maxSlots) return;
-    final n = slots.length + 1;
-    final peerId = _uuid.v4();
-    final slot = CameraSlot(peerId: peerId, label: 'Camera $n');
-    slots.add(slot);
-    await _signalingController.connectToCamera(s.sessionId, peerId, slot.label);
-    _watchDeviceNameFor(s.sessionId, peerId);
   }
 
   Future<void> issueStartRecording() async {
@@ -850,6 +847,8 @@ class AdminController extends GetxController {
       sub.cancel();
     }
     _deviceNameSubs.clear();
+    _slotUids.clear();
+    _retiredPeerIds.clear();
     _recordingSub?.cancel();
     _recordingSub = null;
     _peerListSub?.cancel();
@@ -959,9 +958,13 @@ class AdminController extends GetxController {
     for (var i = 0; i < slots.length; i++) {
       final peerState = peers[slots[i].peerId];
       if (peerState != null && peerState.status != slots[i].connectionStatus) {
+        // Only a camera that never got this take's start command: the
+        // others keep recording locally through a dropped connection, and a
+        // second command would move their recorded start time.
         if (isRecording.value &&
             peerState.status == PeerStatus.connected &&
             slots[i].connectionStatus != PeerStatus.connected &&
+            !_cameraRecordingStartAt.containsKey(slots[i].peerId) &&
             s != null) {
           unawaited(_autoStartRecordingForPeer(slots[i].peerId, s.sessionId));
         }
@@ -1100,27 +1103,75 @@ class AdminController extends GetxController {
 
   void _watchPeerList(String sessionId) {
     _peerListSub?.cancel();
-    _peerListSub = _watchPeers(sessionId).listen((peers) {
-      final s = session.value;
-      if (s == null) return;
-      for (final peer in peers) {
-        if (!slots.any((slot) => slot.peerId == peer.peerId) &&
-            slots.length < _maxSlots) {
+    _peerListSub = _watchPeers(sessionId).listen(onPeerListChanged);
+  }
+
+  /// Gives each newly joined camera a slot, or hands a phone that rejoined
+  /// (same Firebase account, new peerId) back the slot it had.
+  @visibleForTesting
+  void onPeerListChanged(List<PeerInfo> peers) {
+    final s = session.value;
+    if (s == null) return;
+    for (final peer in peers) {
+      final known = slots.any((slot) => slot.peerId == peer.peerId) ||
+          _retiredPeerIds.contains(peer.peerId);
+      if (!known) {
+        final rejoined = peer.uid == null
+            ? null
+            : slots.firstWhereOrNull((slot) => _slotUids[slot.peerId] == peer.uid);
+        if (rejoined != null) {
+          _reassignSlot(s.sessionId, rejoined, peer);
+        } else if (slots.length < _maxSlots) {
           final label = peer.deviceName ?? 'Camera ${slots.length + 1}';
-          final slot = CameraSlot(peerId: peer.peerId, label: label);
-          slots.add(slot);
-          unawaited(_signalingController.connectToCamera(s.sessionId, peer.peerId, label));
-          _watchDeviceNameFor(s.sessionId, peer.peerId);
-          if (isRecording.value) {
-            unawaited(_autoStartRecordingForPeer(peer.peerId, s.sessionId));
-          }
-        }
-        if (peer.capabilities.isNotEmpty) {
-          cameraCapabilities[peer.peerId] = peer.capabilities;
+          slots.add(CameraSlot(peerId: peer.peerId, label: label));
+          _connectPeer(s.sessionId, peer, label);
         }
       }
-      _computeCompatibleProfiles();
-    });
+      if (peer.capabilities.isNotEmpty) {
+        cameraCapabilities[peer.peerId] = peer.capabilities;
+      }
+    }
+    _computeCompatibleProfiles();
+  }
+
+  void _connectPeer(String sessionId, PeerInfo peer, String label) {
+    if (peer.uid != null) _slotUids[peer.peerId] = peer.uid!;
+    unawaited(_signalingController.connectToCamera(sessionId, peer.peerId, label));
+    _watchDeviceNameFor(sessionId, peer.peerId);
+    if (isRecording.value) {
+      unawaited(_autoStartRecordingForPeer(peer.peerId, sessionId));
+    }
+  }
+
+  /// Moves [old]'s slot to the rejoined [peer]: same place in the strip, the
+  /// old connection closed. A take in progress keeps the old peerId in its
+  /// timeline, so the part recorded before the phone left still renders.
+  void _reassignSlot(String sessionId, CameraSlot old, PeerInfo peer) {
+    final oldId = old.peerId;
+    _retiredPeerIds.add(oldId);
+    _slotUids.remove(oldId);
+    _deviceNameSubs.remove(oldId)?.cancel();
+    unawaited(_signalingController.disconnect(sessionId, oldId));
+    unawaited(renderers.remove(oldId)?.dispose());
+    _remoteStreams.remove(oldId);
+    // The phone restarted, so its zoom, mute and pause are back to defaults.
+    for (final perCamera in [mutedCameras, pausedCameras, zoomLevels, liveAudioEnabled]) {
+      perCamera.remove(oldId);
+    }
+    cameraCapabilities.remove(oldId);
+    coAdminPeerIds.remove(oldId);
+    // Before _connectPeer: an auto-started recording must already name the
+    // rejoined phone as the audio source.
+    if (masterAudioCameraId.value == oldId) masterAudioCameraId.value = peer.peerId;
+
+    final index = slots.indexWhere((slot) => slot.peerId == oldId);
+    slots[index] = CameraSlot(
+      peerId: peer.peerId,
+      label: old.label,
+      deviceName: peer.deviceName ?? old.deviceName,
+    );
+    _connectPeer(sessionId, peer, old.label);
+    if (activePeerId.value == oldId) switchActiveCamera(peer.peerId);
   }
 
   void _computeCompatibleProfiles() {
