@@ -5,6 +5,7 @@ import '../../../../core/constants/session_lifetime.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../../core/services/auth_service.dart';
 import '../../../session/domain/entities/recording_profile.dart';
+import '../../../session/domain/entities/peer_info.dart';
 
 abstract interface class SignalingRemoteDataSource {
   Future<void> setOfferField(
@@ -52,7 +53,7 @@ abstract interface class SignalingRemoteDataSource {
   Future<String?> lookupSessionCode(String code);
 
   /// Emits the full peer list (with capabilities) whenever it changes.
-  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(String sessionId);
+  Stream<List<PeerInfo>> watchPeers(String sessionId);
 }
 
 class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
@@ -247,7 +248,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
   }
 
   @override
-  Stream<List<({String peerId, String? deviceName, List<RecordingProfile> capabilities})>> watchPeers(
+  Stream<List<PeerInfo>> watchPeers(
     String sessionId,
   ) =>
       _firestore
@@ -258,6 +259,7 @@ class FirebaseSignalingDataSource implements SignalingRemoteDataSource {
           .map((snap) => snap.docs
               .map((doc) => (
                     peerId: doc.id,
+                    uid: doc.data()[FirestoreConstants.peerUid]?.toString(),
                     deviceName: doc.data()['deviceName']?.toString(),
                     capabilities: _parseCapabilities(doc.data()[FirestoreConstants.capabilities]),
                   ))

@@ -10,6 +10,7 @@ import '../../domain/entities/camera_slot.dart';
 import '../../domain/entities/session.dart';
 import '../controllers/admin_controller.dart';
 import '../services/render_service.dart';
+import '../widgets/join_code_sheet.dart';
 import '../widgets/transfer_sheet.dart';
 
 class AdminLivePage extends GetView<AdminController> {
@@ -256,7 +257,7 @@ class _PreviewStrip extends StatelessWidget {
                           itemBuilder: (_, i) {
                             if (i == slots.length) {
                               return _AddCameraButton(
-                                onTap: controller.connectNewSlot,
+                                onTap: () => JoinCodeSheet.show(context),
                               );
                             }
                             return _CameraThumbnail(
@@ -476,10 +477,10 @@ class _AddCameraButton extends StatelessWidget {
         child: const Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.add, color: Colors.white38, size: 28),
+            Icon(Icons.qr_code_2, color: Colors.white54, size: 28),
             SizedBox(height: 4),
             Text(
-              'Camera',
+              'Add camera',
               style: TextStyle(color: Colors.white38, fontSize: 10),
             ),
           ],

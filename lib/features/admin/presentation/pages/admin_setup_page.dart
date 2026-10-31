@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../../../core/constants/join_qr.dart';
 import '../controllers/admin_controller.dart';
 
 class AdminSetupPage extends GetView<AdminController> {
@@ -120,8 +122,21 @@ class _SessionCodeCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Share this code with camera operators',
+              'Cameras type this code or scan the QR',
               style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: QrImageView(
+                data: joinQrData(code),
+                size: 160,
+                backgroundColor: Colors.white,
+              ),
             ),
             const SizedBox(height: 20),
             Row(
