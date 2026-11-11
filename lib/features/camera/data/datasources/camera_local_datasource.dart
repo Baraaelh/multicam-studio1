@@ -20,16 +20,19 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
   static const _channel =
       MethodChannel('com.multicamstudio.multicam_studio/camera_service');
 
+  static const _maxCapturePixels = 1920 * 1080;
+
   static Map<String, dynamic> _buildConstraints(LensDirection lens, int maxW, int maxH) => {
         'video': {
           'facingMode': lens == LensDirection.back ? 'environment' : 'user',
           'mandatory': {
             'minFrameRate': '30',
           },
-          'ideal': {
-            'width': maxW.toString(),
-            'height': maxH.toString(),
-          },
+          // flutter_webrtc reads the capture size only from top-level numbers;
+          // an `ideal` map is ignored and the camera falls back to 1280×720,
+          // which made every 1080p recording an upscaled 720p picture.
+          'width': maxW,
+          'height': maxH,
           'optional': [],
         },
         'audio': {
@@ -74,7 +77,9 @@ class CameraLocalDataSourceImpl implements CameraLocalDataSource {
     for (final cap in caps) {
       final w = cap['width'] as int;
       final h = cap['height'] as int;
-      if (w * h > maxW * maxH) {
+      // Capped at 1080p: the same capture also feeds the live stream, and
+      // 4K in real time is too heavy for most phones.
+      if (w * h > maxW * maxH && w * h <= _maxCapturePixels) {
         maxW = w;
         maxH = h;
       }

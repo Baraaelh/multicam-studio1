@@ -180,6 +180,11 @@ class WebRtcService {
           params.degradationPreference = webrtc.RTCDegradationPreference.MAINTAIN_RESOLUTION;
           if (params.encodings?.isNotEmpty == true) {
             params.encodings!.first.maxBitrate = 4000000; // 4 Mbps for LAN
+            // The camera captures at up to 1080p for the local recording; the
+            // live preview only needs 720p, so the encoder scales it down
+            // (without touching the frames the recorder gets).
+            final scale = _previewScale(track);
+            if (scale > 1) params.encodings!.first.scaleResolutionDownBy = scale;
           }
           await sender.setParameters(params);
         } catch (_) {
@@ -187,6 +192,17 @@ class WebRtcService {
         }
       }
     }
+  }
+
+  static const _previewShortSide = 720;
+
+  double _previewScale(webrtc.MediaStreamTrack track) {
+    final settings = track.getSettings();
+    final w = (settings['width'] as num?)?.toDouble();
+    final h = (settings['height'] as num?)?.toDouble();
+    if (w == null || h == null) return 1;
+    final shortSide = w < h ? w : h;
+    return shortSide > _previewShortSide ? shortSide / _previewShortSide : 1;
   }
 
   /// Replaces the outgoing video track on a live connection.

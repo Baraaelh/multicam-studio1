@@ -76,6 +76,7 @@ class I420VideoRecorder(
     @Volatile private var videoSamplesWritten = 0L
     @Volatile private var audioIssue: String? = null
     @Volatile private var rotationSet = false
+    @Volatile private var turnUpright = false
     // Set when dequeueOutputBuffer() throws IllegalStateException (codec error state).
     // Prevents FATAL EXCEPTION on the I420Vid HandlerThread.
     @Volatile private var encoderFailed = false
@@ -327,7 +328,10 @@ class I420VideoRecorder(
                 if (!rotationSet) {
                     // Rotation must be set before muxer.start() (called inside maybeStartMuxer
                     // on INFO_OUTPUT_FORMAT_CHANGED). First frame is the earliest we know it.
-                    muxer?.setOrientationHint(frame.rotation)
+                    // Front cameras (270°) are written turned by 180° so every file
+                    // shares the back camera's hint (see needsUprightTurn).
+                    turnUpright = needsUprightTurn(frame.rotation)
+                    muxer?.setOrientationHint(uprightHint(frame.rotation))
                     rotationSet = true
                     if (fw != targetWidth || fh != targetHeight) {
                         Log.d(TAG, "source frame ${fw}×${fh} — scaling to ${targetWidth}×${targetHeight}")
@@ -420,8 +424,9 @@ class I420VideoRecorder(
         val yRow = ByteArray(stride)
         val yBuf = i420.dataY
         for (row in 0 until h) {
-            yBuf.position(row * i420.strideY)
+            yBuf.position((if (turnUpright) h - 1 - row else row) * i420.strideY)
             yBuf.get(yRow, 0, w)
+            if (turnUpright) reverse(yRow, w)
             dst.put(yRow, 0, stride)
         }
         for (row in h until sliceHeight) dst.put(pad, 0, stride)
@@ -435,10 +440,12 @@ class I420VideoRecorder(
         val uvRow = ByteArray(stride)
         val uBuf = i420.dataU; val vBuf = i420.dataV
         for (row in 0 until cH) {
-            uBuf.position(row * i420.strideU)
-            vBuf.position(row * i420.strideV)
+            val srcRow = if (turnUpright) cH - 1 - row else row
+            uBuf.position(srcRow * i420.strideU)
+            vBuf.position(srcRow * i420.strideV)
             uBuf.get(uArr, 0, cW)
             vBuf.get(vArr, 0, cW)
+            if (turnUpright) { reverse(uArr, cW); reverse(vArr, cW) }
             var j = 0
             for (col in 0 until cW) { uvRow[j++] = uArr[col]; uvRow[j++] = vArr[col] }
             dst.put(uvRow, 0, stride)
@@ -463,16 +470,20 @@ class I420VideoRecorder(
         val ySrcRow = ByteArray(srcW)
         val yRow = ByteArray(stride)
         var prevSyY = -1
-        for (dy in 0 until targetHeight) {
+        // Turning by 180° maps each output pixel to the mirrored source pixel.
+        val flip = turnUpright
+        for (outY in 0 until targetHeight) {
+            val dy = if (flip) targetHeight - 1 - outY else outY
             val sy = (dy * yRatioY).toInt().coerceIn(0, srcH - 1)
             if (sy != prevSyY) {
                 i420.dataY.position(sy * i420.strideY)
                 i420.dataY.get(ySrcRow, 0, srcW)
                 prevSyY = sy
             }
-            for (dx in 0 until targetWidth) {
+            for (outX in 0 until targetWidth) {
+                val dx = if (flip) targetWidth - 1 - outX else outX
                 val sx = (dx * xRatioY).toInt().coerceIn(0, srcW - 1)
-                yRow[dx] = ySrcRow[sx]
+                yRow[outX] = ySrcRow[sx]
             }
             dst.put(yRow, 0, stride)
         }
@@ -482,7 +493,8 @@ class I420VideoRecorder(
         val vSrcRow = ByteArray(srcCW)
         val uvRow = ByteArray(stride)
         var prevSyC = -1
-        for (dy in 0 until dstCH) {
+        for (outY in 0 until dstCH) {
+            val dy = if (flip) dstCH - 1 - outY else outY
             val sy = (dy * yRatioC).toInt().coerceIn(0, srcCH - 1)
             if (sy != prevSyC) {
                 i420.dataU.position(sy * i420.strideU)
@@ -492,7 +504,8 @@ class I420VideoRecorder(
                 prevSyC = sy
             }
             var j = 0
-            for (dx in 0 until dstCW) {
+            for (outX in 0 until dstCW) {
+                val dx = if (flip) dstCW - 1 - outX else outX
                 val sx = (dx * xRatioC).toInt().coerceIn(0, srcCW - 1)
                 uvRow[j++] = uSrcRow[sx]
                 uvRow[j++] = vSrcRow[sx]
@@ -500,6 +513,11 @@ class I420VideoRecorder(
             dst.put(uvRow, 0, stride)
         }
         for (row in dstCH until sliceHeight / 2) dst.put(pad, 0, stride)
+    }
+
+    private fun reverse(a: ByteArray, n: Int) {
+        var i = 0; var j = n - 1
+        while (i < j) { val t = a[i]; a[i] = a[j]; a[j] = t; i++; j-- }
     }
 
     private fun drainVideoEncoder(endOfStream: Boolean) {
