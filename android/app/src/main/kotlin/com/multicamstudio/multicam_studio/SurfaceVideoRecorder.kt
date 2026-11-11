@@ -104,6 +104,7 @@ class SurfaceVideoRecorder(
     @Volatile private var videoSamplesWritten = 0L
     @Volatile private var audioIssue: String? = null
     @Volatile private var rotationSet = false
+    @Volatile private var turnUpright = false
 
     // ── EGL / surface ─────────────────────────────────────────────────────────
     // All EGL fields are only accessed on videoHandler.
@@ -338,7 +339,8 @@ class SurfaceVideoRecorder(
             // VideoRenderService reads this via MediaMetadataRetriever and
             // propagates it to the merged output.
             if (!rotationSet) {
-                muxer?.setOrientationHint(frame.rotation)
+                turnUpright = needsUprightTurn(frame.rotation)
+                muxer?.setOrientationHint(uprightHint(frame.rotation))
                 rotationSet = true
             }
 
@@ -358,8 +360,11 @@ class SurfaceVideoRecorder(
             //     (which calls buffer.release()) is balanced by our retain, and
             //     the outer frame.release() in finally is balanced by the
             //     frame.retain() we called in onFrame().
+            // A front camera's frames come in at 270° (back cameras: 90°); those
+            // are drawn turned by 180° so every file shares the back camera's hint
+            // (see needsUprightTurn).
             frame.buffer.retain()
-            val rawFrame = VideoFrame(frame.buffer, 0, frame.timestampNs)
+            val rawFrame = VideoFrame(frame.buffer, if (turnUpright) 180 else 0, frame.timestampNs)
             try {
                 // Monotonicity guard: surface encoders on some devices reject
                 // non-monotonic PTSs; on-frame timestamps can occasionally repeat
