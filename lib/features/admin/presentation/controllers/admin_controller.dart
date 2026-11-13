@@ -625,6 +625,20 @@ class AdminController extends GetxController {
     );
   }
 
+  /// Asks [peerId]'s phone to switch between its back and front camera. The
+  /// new lens starts unzoomed.
+  Future<void> switchCameraLens(String peerId) async {
+    final s = session.value;
+    if (s == null || !_isValidSession()) return;
+    zoomLevels[peerId] = 1.0;
+    await _clockController.issueCommand(
+      s.sessionId,
+      CommandType.switchLens,
+      bufferMs: 200,
+      targetPeerId: peerId,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Timeline builder — called before navigating to render
   // ---------------------------------------------------------------------------

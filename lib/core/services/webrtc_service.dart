@@ -222,6 +222,16 @@ class WebRtcService {
       throw WebRtcException('No video sender for peerId: $peerId');
     }
     await videoSender.replaceTrack(newTrack);
+    // The other lens may capture at another size: keep the preview at 720p.
+    try {
+      final params = videoSender.parameters;
+      if (params.encodings?.isNotEmpty == true) {
+        params.encodings!.first.scaleResolutionDownBy = _previewScale(newTrack);
+        await videoSender.setParameters(params);
+      }
+    } catch (_) {
+      // Fallback if not supported on this platform/version
+    }
   }
 
   /// Sets the enabled state on the audio RTCRtpSender for a peer.

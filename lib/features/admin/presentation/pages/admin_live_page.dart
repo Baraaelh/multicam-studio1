@@ -793,7 +793,7 @@ class _CameraThumbnail extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Zoom controls — overlaid on the program view for the active camera
+// Lens flip + zoom controls — overlaid on the program view for the active camera
 // ---------------------------------------------------------------------------
 
 class _ZoomControls extends StatelessWidget {
@@ -814,6 +814,13 @@ class _ZoomControls extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Front/back lens of the camera on air; follows the active camera.
+            _ZoomButton(
+              icon: Icons.flip_camera_android,
+              onTap: () => controller.switchCameraLens(peerId),
+              enabled: true,
+            ),
+            const SizedBox(width: 24, child: Divider(height: 4, color: Colors.white24)),
             _ZoomButton(
               icon: Icons.add,
               onTap: () => controller.adjustZoom(peerId, 0.5),

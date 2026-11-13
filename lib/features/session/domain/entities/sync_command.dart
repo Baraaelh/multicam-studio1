@@ -10,7 +10,9 @@ enum CommandType {
   resumeCamera,
   promoteToCoAdmin,
   revokeCoAdmin,
-  switchActiveCamera;
+  switchActiveCamera,
+  // Admin asks one camera to switch between its back and front lens.
+  switchLens;
 
   static CommandType? tryFromString(String s) =>
       CommandType.values.cast<CommandType?>().firstWhere(

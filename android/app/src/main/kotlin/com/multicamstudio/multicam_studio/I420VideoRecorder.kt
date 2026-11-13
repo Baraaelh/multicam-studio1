@@ -76,6 +76,8 @@ class I420VideoRecorder(
     @Volatile private var videoSamplesWritten = 0L
     @Volatile private var audioIssue: String? = null
     @Volatile private var rotationSet = false
+    @Volatile private var fileHint = 0
+    // Per frame: whether writeNV12* turn the current frame by 180°.
     @Volatile private var turnUpright = false
     // Set when dequeueOutputBuffer() throws IllegalStateException (codec error state).
     // Prevents FATAL EXCEPTION on the I420Vid HandlerThread.
@@ -329,14 +331,17 @@ class I420VideoRecorder(
                     // Rotation must be set before muxer.start() (called inside maybeStartMuxer
                     // on INFO_OUTPUT_FORMAT_CHANGED). First frame is the earliest we know it.
                     // Front cameras (270°) are written turned by 180° so every file
-                    // shares the back camera's hint (see needsUprightTurn).
-                    turnUpright = needsUprightTurn(frame.rotation)
-                    muxer?.setOrientationHint(uprightHint(frame.rotation))
+                    // shares the back camera's hint (see uprightHint).
+                    fileHint = uprightHint(frame.rotation)
+                    muxer?.setOrientationHint(fileHint)
                     rotationSet = true
                     if (fw != targetWidth || fh != targetHeight) {
                         Log.d(TAG, "source frame ${fw}×${fh} — scaling to ${targetWidth}×${targetHeight}")
                     }
                 }
+
+                // Re-checked per frame: a lens switch mid-take changes the rotation.
+                turnUpright = needsHalfTurn(frame.rotation, fileHint)
 
                 val enc = videoEncoder ?: run {
                     synchronized(profLock) { profFramesSkipped++ }
