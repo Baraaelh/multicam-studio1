@@ -26,13 +26,14 @@ void main() {
 
   tearDown(Get.reset);
 
-  testWidgets('First launch opens the welcome guide with the developer credit',
+  testWidgets('First launch opens the welcome guide with the owner and developer credits',
       (tester) async {
     await tester.pumpWidget(App(onboardingStore: _FakeStore()));
     await tester.pumpAndSettle();
 
     expect(find.text('Multicam Studio'), findsOneWidget);
     expect(find.text('Baraa Alhaddad'), findsOneWidget);
+    expect(find.text('Mohammed Alattar'), findsOneWidget);
     expect(find.text('Camera Mode'), findsNothing);
   });
 
