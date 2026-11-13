@@ -206,7 +206,9 @@ class _BottomActions extends StatelessWidget {
                 label: Text(isStarting ? 'Starting…' : 'Go Live'),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(50),
-                  backgroundColor: Colors.red.shade700,
+                  backgroundColor: Colors.yellow.shade700,
+                  foregroundColor: Colors.white,
+                  textStyle: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
             ],
