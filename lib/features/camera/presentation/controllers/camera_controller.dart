@@ -281,6 +281,11 @@ class CameraController extends GetxController {
         // there's nothing to do — the camera keeps streaming regardless of
         // which camera is currently on air.
         break;
+      case CommandType.switchLens:
+        // Ignore repeats while the previous switch is still opening the camera.
+        if (cameraState.value.status != CameraStatus.switchingLens) {
+          unawaited(switchLens());
+        }
     }
   }
 
