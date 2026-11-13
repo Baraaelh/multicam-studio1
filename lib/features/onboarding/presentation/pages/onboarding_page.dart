@@ -225,20 +225,38 @@ class _WelcomeStep extends StatelessWidget {
             ),
             child: const Column(
               children: [
-                Text(
-                  'SYSTEM DEVELOPER',
-                  style: TextStyle(fontSize: 11, letterSpacing: 2, color: Colors.white38),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  'Baraa Alhaddad',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
-                ),
+                _Credit(role: 'OWNER', name: 'Mohammed Alattar'),
+                SizedBox(height: 12),
+                _Credit(role: 'SYSTEM DEVELOPER', name: 'Baraa Alhaddad'),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _Credit extends StatelessWidget {
+  const _Credit({required this.role, required this.name});
+
+  final String role;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          role,
+          style: const TextStyle(fontSize: 11, letterSpacing: 2, color: Colors.white38),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          name,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
+        ),
+      ],
     );
   }
 }
